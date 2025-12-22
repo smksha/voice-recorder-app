@@ -1,0 +1,35 @@
+{
+  "name": "voice-recorder-app",
+  "version": "1.0.0",
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smksha/voice-recorder-app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/smksha/voice-recorder-app/issues"
+  },
+  "homepage": "https://github.com/smksha/voice-recorder-app#readme",
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "@types/react": "^18.3.27",
+    "@types/react-native": "^0.72.8",
+    "expo": "^52.0.48",
+    "expo-av": "~15.0.2",
+    "expo-file-system": "~18.0.12",
+    "expo-status-bar": "~2.0.1",
+    "react": "^18.3.1",
+    "react-native": "^0.76.0",
+    "react-native-web": "^0.19.13",
+    "typescript": "^5.9.3"
+  }
+}
