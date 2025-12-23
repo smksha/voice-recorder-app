@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Audio } from 'expo-av';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
+import { AppState, AppStateStatus } from 'react-native';
 import { Recording } from '../types/Recording';
 import {
   loadRecordingsMetadata,
@@ -13,10 +14,13 @@ import {
 interface UseRecordingsReturn {
   recordings: Recording[];
   isRecording: boolean;
+  isPaused: boolean;
   recordingDuration: number;
   isLoading: boolean;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
+  pauseRecording: () => Promise<void>;
+  resumeRecording: () => Promise<void>;
   deleteRecording: (id: string) => Promise<void>;
   refreshRecordings: () => Promise<void>;
 }
@@ -24,10 +28,14 @@ interface UseRecordingsReturn {
 export const useRecordings = (): UseRecordingsReturn => {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number>(0);
+  const [pausedDuration, setPausedDuration] = useState<number>(0);
+  const pauseStartTime = useRef<number>(0);
+  const wasRecordingBeforeBackground = useRef<boolean>(false);
 
   const refreshRecordings = useCallback(async () => {
     setIsLoading(true);
@@ -48,13 +56,15 @@ export const useRecordings = (): UseRecordingsReturn => {
   // Initialize audio and load recordings on mount
   useEffect(() => {
     const init = async () => {
-      // Initialize audio mode for playback first
+      // Initialize audio mode with interruption handling
       try {
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: false,
           playsInSilentModeIOS: true,
           staysActiveInBackground: false,
-          shouldDuckAndroid: true,
+          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+          shouldDuckAndroid: false,
           playThroughEarpieceAndroid: false,
         });
       } catch (error) {
@@ -67,18 +77,50 @@ export const useRecordings = (): UseRecordingsReturn => {
     init();
   }, [refreshRecordings]);
 
+  // Handle app state changes (phone calls, app backgrounding)
+  useEffect(() => {
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        // App came to foreground
+        if (wasRecordingBeforeBackground.current && recording && isPaused) {
+          // Attempt to resume recording after interruption
+          console.log('App active - recording was paused, ready to resume');
+        }
+      } else if (nextAppState === 'background' || nextAppState === 'inactive') {
+        // App going to background (possibly due to phone call)
+        if (isRecording && !isPaused && recording) {
+          wasRecordingBeforeBackground.current = true;
+          // Auto-pause when going to background
+          try {
+            await recording.pauseAsync();
+            setIsPaused(true);
+            pauseStartTime.current = Date.now();
+            console.log('Recording paused due to app backgrounding/interruption');
+          } catch (error) {
+            console.error('Error pausing recording:', error);
+          }
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, [isRecording, isPaused, recording]);
+
   // Update recording duration
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isRecording && recordingStartTime) {
+    if (isRecording && !isPaused && recordingStartTime) {
       interval = setInterval(() => {
-        setRecordingDuration(Date.now() - recordingStartTime);
+        setRecordingDuration(Date.now() - recordingStartTime - pausedDuration);
       }, 100);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isRecording, recordingStartTime]);
+  }, [isRecording, isPaused, recordingStartTime, pausedDuration]);
 
   const startRecording = useCallback(async () => {
     try {
@@ -89,17 +131,30 @@ export const useRecordings = (): UseRecordingsReturn => {
         return;
       }
 
-      // Set audio mode for recording - must be done before creating recording
+      // Set audio mode for recording with interruption handling
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
-        shouldDuckAndroid: true,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: false,
         playThroughEarpieceAndroid: false,
       });
 
       // Create a new recording instance
       const newRecording = new Audio.Recording();
+      
+      // Set up status update callback to handle interruptions
+      newRecording.setOnRecordingStatusUpdate((status) => {
+        if (status.isRecording === false && isRecording && !isPaused) {
+          // Recording was interrupted externally (e.g., phone call)
+          console.log('Recording interrupted externally');
+          setIsPaused(true);
+          pauseStartTime.current = Date.now();
+          wasRecordingBeforeBackground.current = true;
+        }
+      });
       
       // Prepare the recording
       await newRecording.prepareToRecordAsync(
@@ -111,8 +166,11 @@ export const useRecordings = (): UseRecordingsReturn => {
 
       setRecording(newRecording);
       setIsRecording(true);
+      setIsPaused(false);
       setRecordingStartTime(Date.now());
       setRecordingDuration(0);
+      setPausedDuration(0);
+      wasRecordingBeforeBackground.current = false;
     } catch (error) {
       console.error('Error starting recording:', error);
       // Reset audio mode on error
@@ -120,20 +178,72 @@ export const useRecordings = (): UseRecordingsReturn => {
         allowsRecordingIOS: false,
       });
     }
-  }, []);
+  }, [isRecording, isPaused]);
+
+  const pauseRecording = useCallback(async () => {
+    if (!recording || !isRecording || isPaused) return;
+
+    try {
+      await recording.pauseAsync();
+      setIsPaused(true);
+      pauseStartTime.current = Date.now();
+      console.log('Recording paused');
+    } catch (error) {
+      console.error('Error pausing recording:', error);
+    }
+  }, [recording, isRecording, isPaused]);
+
+  const resumeRecording = useCallback(async () => {
+    if (!recording || !isRecording || !isPaused) return;
+
+    try {
+      // Re-set audio mode before resuming (important after phone call)
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: false,
+        playThroughEarpieceAndroid: false,
+      });
+
+      await recording.startAsync();
+      
+      // Track how long we were paused
+      if (pauseStartTime.current > 0) {
+        setPausedDuration(prev => prev + (Date.now() - pauseStartTime.current));
+        pauseStartTime.current = 0;
+      }
+      
+      setIsPaused(false);
+      wasRecordingBeforeBackground.current = false;
+      console.log('Recording resumed');
+    } catch (error) {
+      console.error('Error resuming recording:', error);
+    }
+  }, [recording, isRecording, isPaused]);
 
   const stopRecording = useCallback(async () => {
     if (!recording) return;
 
     try {
       setIsRecording(false);
-      const finalDuration = Date.now() - recordingStartTime;
+      setIsPaused(false);
+      
+      // Calculate final duration accounting for paused time
+      let finalDuration = Date.now() - recordingStartTime - pausedDuration;
+      if (pauseStartTime.current > 0) {
+        finalDuration -= (Date.now() - pauseStartTime.current);
+      }
 
       await recording.stopAndUnloadAsync();
 
       // Reset audio mode
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
       });
 
       const uri = recording.getURI();
@@ -153,7 +263,7 @@ export const useRecordings = (): UseRecordingsReturn => {
           uri: newUri,
           filename,
           createdAt: new Date().toISOString(),
-          duration: finalDuration,
+          duration: Math.max(finalDuration, 0),
         };
 
         const updatedRecordings = [newRecording, ...recordings];
@@ -164,10 +274,13 @@ export const useRecordings = (): UseRecordingsReturn => {
       setRecording(null);
       setRecordingDuration(0);
       setRecordingStartTime(0);
+      setPausedDuration(0);
+      pauseStartTime.current = 0;
+      wasRecordingBeforeBackground.current = false;
     } catch (error) {
       console.error('Error stopping recording:', error);
     }
-  }, [recording, recordingStartTime, recordings]);
+  }, [recording, recordingStartTime, pausedDuration, recordings]);
 
   const deleteRecording = useCallback(
     async (id: string) => {
@@ -190,10 +303,13 @@ export const useRecordings = (): UseRecordingsReturn => {
   return {
     recordings,
     isRecording,
+    isPaused,
     recordingDuration,
     isLoading,
     startRecording,
     stopRecording,
+    pauseRecording,
+    resumeRecording,
     deleteRecording,
     refreshRecordings,
   };

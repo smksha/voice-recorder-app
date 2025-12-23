@@ -21,10 +21,13 @@ export default function App() {
   const {
     recordings,
     isRecording,
+    isPaused,
     recordingDuration,
     isLoading,
     startRecording,
     stopRecording,
+    pauseRecording,
+    resumeRecording,
     deleteRecording,
   } = useRecordings();
 
@@ -127,9 +130,12 @@ export default function App() {
 
       <RecordButton
         isRecording={isRecording}
+        isPaused={isPaused}
         recordingDuration={recordingDuration}
         onStartRecording={startRecording}
         onStopRecording={stopRecording}
+        onPauseRecording={pauseRecording}
+        onResumeRecording={resumeRecording}
       />
     </SafeAreaView>
   );

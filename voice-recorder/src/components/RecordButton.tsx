@@ -4,21 +4,27 @@ import { formatDuration } from '../utils/formatters';
 
 interface RecordButtonProps {
   isRecording: boolean;
+  isPaused: boolean;
   recordingDuration: number;
   onStartRecording: () => void;
   onStopRecording: () => void;
+  onPauseRecording: () => void;
+  onResumeRecording: () => void;
 }
 
 export const RecordButton: React.FC<RecordButtonProps> = ({
   isRecording,
+  isPaused,
   recordingDuration,
   onStartRecording,
   onStopRecording,
+  onPauseRecording,
+  onResumeRecording,
 }) => {
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    if (isRecording) {
+    if (isRecording && !isPaused) {
       const animation = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
@@ -38,40 +44,80 @@ export const RecordButton: React.FC<RecordButtonProps> = ({
     } else {
       pulseAnim.setValue(1);
     }
-  }, [isRecording, pulseAnim]);
+  }, [isRecording, isPaused, pulseAnim]);
+
+  const handleMainButtonPress = () => {
+    if (!isRecording) {
+      onStartRecording();
+    } else {
+      onStopRecording();
+    }
+  };
+
+  const handlePauseResumePress = () => {
+    if (isPaused) {
+      onResumeRecording();
+    } else {
+      onPauseRecording();
+    }
+  };
 
   return (
     <View style={styles.container}>
       {isRecording && (
         <View style={styles.durationContainer}>
-          <View style={styles.recordingIndicator} />
+          <View style={[styles.recordingIndicator, isPaused && styles.pausedIndicator]} />
           <Text style={styles.durationText}>{formatDuration(recordingDuration)}</Text>
+          {isPaused && <Text style={styles.pausedText}>PAUSED</Text>}
         </View>
       )}
 
-      <TouchableOpacity
-        style={styles.buttonWrapper}
-        onPress={isRecording ? onStopRecording : onStartRecording}
-        activeOpacity={0.8}
-      >
-        <Animated.View
-          style={[
-            styles.button,
-            isRecording && styles.buttonRecording,
-            { transform: [{ scale: pulseAnim }] },
-          ]}
+      <View style={styles.buttonsRow}>
+        {isRecording && (
+          <TouchableOpacity
+            style={[styles.secondaryButton, isPaused ? styles.resumeButton : styles.pauseButton]}
+            onPress={handlePauseResumePress}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.secondaryButtonText}>
+              {isPaused ? '▶️' : '⏸️'}
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        <TouchableOpacity
+          style={styles.buttonWrapper}
+          onPress={handleMainButtonPress}
+          activeOpacity={0.8}
         >
-          <View
+          <Animated.View
             style={[
-              styles.innerButton,
-              isRecording && styles.innerButtonRecording,
+              styles.button,
+              isRecording && styles.buttonRecording,
+              isPaused && styles.buttonPaused,
+              { transform: [{ scale: isRecording && !isPaused ? pulseAnim : 1 }] },
             ]}
-          />
-        </Animated.View>
-      </TouchableOpacity>
+          >
+            <View
+              style={[
+                styles.innerButton,
+                isRecording && styles.innerButtonRecording,
+              ]}
+            />
+          </Animated.View>
+        </TouchableOpacity>
+
+        {isRecording && (
+          <View style={styles.placeholderButton} />
+        )}
+      </View>
 
       <Text style={styles.hint}>
-        {isRecording ? 'Tap to stop' : 'Tap to record'}
+        {!isRecording 
+          ? 'Tap to record' 
+          : isPaused 
+            ? 'Tap ▶️ to resume or ⏹ to save'
+            : 'Tap to stop'}
       </Text>
     </View>
   );
@@ -107,14 +153,29 @@ const styles = StyleSheet.create({
     backgroundColor: '#FF3B30',
     marginRight: 8,
   },
+  pausedIndicator: {
+    backgroundColor: '#FF9500',
+  },
   durationText: {
     fontSize: 18,
     fontWeight: '600',
     color: '#333',
     fontVariant: ['tabular-nums'],
   },
-  buttonWrapper: {
+  pausedText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FF9500',
+    marginLeft: 8,
+  },
+  buttonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 12,
+  },
+  buttonWrapper: {
+    marginHorizontal: 16,
   },
   button: {
     width: 80,
@@ -134,6 +195,9 @@ const styles = StyleSheet.create({
   buttonRecording: {
     borderColor: '#FF3B30',
   },
+  buttonPaused: {
+    borderColor: '#FF9500',
+  },
   innerButton: {
     width: 56,
     height: 56,
@@ -145,8 +209,34 @@ const styles = StyleSheet.create({
     height: 28,
     borderRadius: 6,
   },
+  secondaryButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  pauseButton: {
+    backgroundColor: '#FF9500',
+  },
+  resumeButton: {
+    backgroundColor: '#34C759',
+  },
+  secondaryButtonText: {
+    fontSize: 24,
+  },
+  placeholderButton: {
+    width: 56,
+    height: 56,
+  },
   hint: {
     fontSize: 14,
     color: '#888',
+    textAlign: 'center',
   },
 });
