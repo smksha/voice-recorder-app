@@ -16,7 +16,7 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "This app needs access to your microphone to record voice memos."
       },
-      "bundleIdentifier": "com.anonymous.voice-recorder"
+      "bundleIdentifier": "com.anonymous.voicerecorder"
     },
     "android": {
       "adaptiveIcon": {
