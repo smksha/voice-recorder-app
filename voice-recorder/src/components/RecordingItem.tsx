@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Animated,
 } from 'react-native';
 import { Recording } from '../types/Recording';
 import { formatDuration, formatDateTime } from '../utils/formatters';
