@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import { Recording } from '../types/Recording';
 import {
   loadRecordingsMetadata,
@@ -28,28 +29,6 @@ export const useRecordings = (): UseRecordingsReturn => {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number>(0);
 
-  // Load recordings on mount
-  useEffect(() => {
-    const init = async () => {
-      await ensureRecordingsDirectory();
-      await refreshRecordings();
-    };
-    init();
-  }, []);
-
-  // Update recording duration
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isRecording && recordingStartTime) {
-      interval = setInterval(() => {
-        setRecordingDuration(Date.now() - recordingStartTime);
-      }, 100);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isRecording, recordingStartTime]);
-
   const refreshRecordings = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -65,6 +44,28 @@ export const useRecordings = (): UseRecordingsReturn => {
       setIsLoading(false);
     }
   }, []);
+
+  // Load recordings on mount
+  useEffect(() => {
+    const init = async () => {
+      await ensureRecordingsDirectory();
+      await refreshRecordings();
+    };
+    init();
+  }, [refreshRecordings]);
+
+  // Update recording duration
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isRecording && recordingStartTime) {
+      interval = setInterval(() => {
+        setRecordingDuration(Date.now() - recordingStartTime);
+      }, 100);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isRecording, recordingStartTime]);
 
   const startRecording = useCallback(async () => {
     try {
@@ -116,7 +117,6 @@ export const useRecordings = (): UseRecordingsReturn => {
         const newUri = `${getRecordingsDirectory()}${filename}`;
 
         // Move recording to our directory
-        const FileSystem = await import('expo-file-system/legacy');
         await FileSystem.moveAsync({
           from: uri,
           to: newUri,
