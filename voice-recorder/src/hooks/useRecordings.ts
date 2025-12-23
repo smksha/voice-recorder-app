@@ -45,9 +45,22 @@ export const useRecordings = (): UseRecordingsReturn => {
     }
   }, []);
 
-  // Load recordings on mount
+  // Initialize audio and load recordings on mount
   useEffect(() => {
     const init = async () => {
+      // Initialize audio mode for playback first
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+        });
+      } catch (error) {
+        console.error('Error setting initial audio mode:', error);
+      }
+      
       await ensureRecordingsDirectory();
       await refreshRecordings();
     };
@@ -76,16 +89,25 @@ export const useRecordings = (): UseRecordingsReturn => {
         return;
       }
 
-      // Set audio mode
+      // Set audio mode for recording - must be done before creating recording
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
       });
 
-      // Start recording
-      const { recording: newRecording } = await Audio.Recording.createAsync(
+      // Create a new recording instance
+      const newRecording = new Audio.Recording();
+      
+      // Prepare the recording
+      await newRecording.prepareToRecordAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
+      
+      // Start recording
+      await newRecording.startAsync();
 
       setRecording(newRecording);
       setIsRecording(true);
@@ -93,6 +115,10 @@ export const useRecordings = (): UseRecordingsReturn => {
       setRecordingDuration(0);
     } catch (error) {
       console.error('Error starting recording:', error);
+      // Reset audio mode on error
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+      });
     }
   }, []);
 
