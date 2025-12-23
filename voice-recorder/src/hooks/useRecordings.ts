@@ -77,27 +77,89 @@ export const useRecordings = (): UseRecordingsReturn => {
     init();
   }, [refreshRecordings]);
 
+  // Reference to track current recording state for background handler
+  const isRecordingRef = useRef(isRecording);
+  const recordingRef = useRef(recording);
+  const recordingStartTimeRef = useRef(recordingStartTime);
+  const pausedDurationRef = useRef(pausedDuration);
+  const recordingsRef = useRef(recordings);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+    recordingRef.current = recording;
+    recordingStartTimeRef.current = recordingStartTime;
+    pausedDurationRef.current = pausedDuration;
+    recordingsRef.current = recordings;
+  }, [isRecording, recording, recordingStartTime, pausedDuration, recordings]);
+
   // Handle app state changes (phone calls, app backgrounding)
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
       if (nextAppState === 'active') {
-        // App came to foreground
-        if (wasRecordingBeforeBackground.current && recording && isPaused) {
-          // Attempt to resume recording after interruption
-          console.log('App active - recording was paused, ready to resume');
-        }
+        // App came to foreground - refresh recordings to show any auto-saved recordings
+        console.log('App active - refreshing recordings list');
+        refreshRecordings();
       } else if (nextAppState === 'background' || nextAppState === 'inactive') {
-        // App going to background (possibly due to phone call)
-        if (isRecording && !isPaused && recording) {
+        // App going to background - AUTO-SAVE the recording to prevent data loss
+        if (isRecordingRef.current && recordingRef.current) {
           wasRecordingBeforeBackground.current = true;
-          // Auto-pause when going to background
+          console.log('App backgrounding - auto-saving recording...');
+          
           try {
-            await recording.pauseAsync();
-            setIsPaused(true);
-            pauseStartTime.current = Date.now();
-            console.log('Recording paused due to app backgrounding/interruption');
+            // Calculate final duration
+            let finalDuration = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
+            if (pauseStartTime.current > 0) {
+              finalDuration -= (Date.now() - pauseStartTime.current);
+            }
+
+            // Stop and save the recording
+            await recordingRef.current.stopAndUnloadAsync();
+
+            // Reset audio mode
+            await Audio.setAudioModeAsync({
+              allowsRecordingIOS: false,
+              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+            });
+
+            const uri = recordingRef.current.getURI();
+            if (uri) {
+              const id = Date.now().toString();
+              const filename = `recording_${id}.m4a`;
+              const newUri = `${getRecordingsDirectory()}${filename}`;
+
+              // Move recording to our directory
+              await FileSystem.moveAsync({
+                from: uri,
+                to: newUri,
+              });
+
+              const newRecording: Recording = {
+                id,
+                uri: newUri,
+                filename,
+                createdAt: new Date().toISOString(),
+                duration: Math.max(finalDuration, 0),
+              };
+
+              const updatedRecordings = [newRecording, ...recordingsRef.current];
+              await saveRecordingMetadata(updatedRecordings);
+              
+              console.log('Recording auto-saved successfully');
+            }
+
+            // Reset state
+            setRecording(null);
+            setIsRecording(false);
+            setIsPaused(false);
+            setRecordingDuration(0);
+            setRecordingStartTime(0);
+            setPausedDuration(0);
+            pauseStartTime.current = 0;
+            wasRecordingBeforeBackground.current = false;
           } catch (error) {
-            console.error('Error pausing recording:', error);
+            console.error('Error auto-saving recording:', error);
           }
         }
       }
@@ -107,7 +169,7 @@ export const useRecordings = (): UseRecordingsReturn => {
     return () => {
       subscription.remove();
     };
-  }, [isRecording, isPaused, recording]);
+  }, [isPaused]);
 
   // Update recording duration
   useEffect(() => {
