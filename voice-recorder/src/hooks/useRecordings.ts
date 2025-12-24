@@ -260,9 +260,9 @@ export const useRecordings = (): UseRecordingsReturn => {
         // App came to foreground
         console.log('App active');
 
-        // Auto-resume if we were recording before backgrounding and recording is still paused
-        if (wasRecordingBeforeBackground.current && recordingRef.current && isPausedRef.current) {
-          console.log('Resuming recording...');
+        // If we were recording before backgrounding (phone call case - paused but not stopped)
+        if (wasInterruptedByPhoneCall.current && recordingRef.current && isPausedRef.current) {
+          console.log('Resuming recording after phone call...');
           try {
             // Re-set audio mode before resuming
             await Audio.setAudioModeAsync({
@@ -287,23 +287,58 @@ export const useRecordings = (): UseRecordingsReturn => {
             wasRecordingBeforeBackground.current = false;
             wasInterruptedByPhoneCall.current = false;
             
-            // Delete the temp backup file since we resumed successfully
-            if (tempRecordingUri.current) {
-              console.log('Deleting temp backup file:', tempRecordingUri.current);
-              await deleteTempRecordingFile(tempRecordingUri.current);
-              await clearTempRecordingMetadata();
-              tempRecordingUri.current = null;
-            }
-            
-            console.log('Recording resumed automatically');
+            console.log('Recording resumed automatically after phone call');
           } catch (error) {
             console.error('Error auto-resuming recording:', error);
-            // If resume fails, refresh to show any saved recordings
             refreshRecordings();
           }
+        } else if (wasRecordingBeforeBackground.current && tempRecordingUri.current) {
+          // User backgrounded and we stopped recording - convert temp to permanent recording
+          console.log('User returned from background - saving temp backup as permanent recording');
+          
+          try {
+            // Load the temp metadata
+            const tempMetadata = await loadTempRecordingMetadata();
+            if (tempMetadata) {
+              // Move temp file to permanent recordings directory
+              const id = Date.now().toString();
+              const filename = `recording_${id}.m4a`;
+              const newUri = `${getRecordingsDirectory()}${filename}`;
+              
+              await FileSystem.moveAsync({
+                from: tempRecordingUri.current!,
+                to: newUri,
+              });
+              
+              const recoveredRecording: Recording = {
+                id,
+                uri: newUri,
+                filename,
+                createdAt: tempMetadata.createdAt,
+                duration: tempMetadata.durationAtPause,
+              };
+              
+              // Add to recordings list
+              const currentRecordings = await loadRecordingsMetadata();
+              const updatedRecordings = [recoveredRecording, ...currentRecordings];
+              await saveRecordingMetadata(updatedRecordings);
+              setRecordings(updatedRecordings);
+              
+              console.log('Recording saved successfully from background pause');
+            }
+          } catch (error) {
+            console.error('Error recovering temp recording:', error);
+          }
+          
+          await clearTempRecordingMetadata();
+          tempRecordingUri.current = null;
+          wasRecordingBeforeBackground.current = false;
+          createdAtRef.current = '';
+          
+          // Refresh to show the saved recording
+          refreshRecordings();
         } else {
-          // Recording was already saved or no recording was in progress
-          // Refresh recordings list to show any saved recordings
+          // No recording was in progress or already handled
           refreshRecordings();
         }
       } else if (nextAppState === 'background' || nextAppState === 'inactive') {
@@ -323,29 +358,36 @@ export const useRecordings = (): UseRecordingsReturn => {
               console.error('Error pausing recording:', error);
             }
           } else {
-            // User backgrounding: Pause and save temp backup
-            console.log('App backgrounding - pausing recording and creating temp backup...');
+            // User backgrounding: STOP recording and save as temp backup (creates valid file)
+            console.log('App backgrounding - stopping recording and saving temp backup...');
             try {
-              // Pause the recording first
-              await recordingRef.current.pauseAsync();
-              setIsPaused(true);
-              pauseStartTime.current = Date.now();
-              wasRecordingBeforeBackground.current = true;
-              console.log('Recording paused');
+              const currentRecording = recordingRef.current;
+              
+              // Calculate duration
+              let durationAtStop = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
+              const recordingCreatedAt = createdAtRef.current || new Date().toISOString();
+              
+              // Actually stop the recording to finalize the file properly
+              await currentRecording.stopAndUnloadAsync();
+              console.log('Recording stopped and finalized');
 
-              // Get the current recording URI
-              const currentUri = recordingRef.current.getURI();
+              // Reset audio mode
+              await Audio.setAudioModeAsync({
+                allowsRecordingIOS: false,
+                interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+                interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+              });
+
+              // Get the finalized recording URI
+              const currentUri = currentRecording.getURI();
               if (currentUri) {
-                // Calculate duration at pause
-                let durationAtPause = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
-                
                 // Create temp backup filename
                 const tempFilename = `temp_backup_${Date.now()}.m4a`;
                 const tempUri = `${getTempRecordingsDirectory()}${tempFilename}`;
                 
-                // Copy the current recording to temp location
-                console.log('Creating temp backup:', tempUri);
-                await FileSystem.copyAsync({
+                // Move the finalized recording to temp location
+                console.log('Moving finalized recording to temp backup:', tempUri);
+                await FileSystem.moveAsync({
                   from: currentUri,
                   to: tempUri,
                 });
@@ -354,14 +396,31 @@ export const useRecordings = (): UseRecordingsReturn => {
                 const tempMetadata: TempRecordingMetadata = {
                   uri: tempUri,
                   filename: tempFilename,
-                  createdAt: createdAtRef.current || new Date().toISOString(),
-                  durationAtPause,
+                  createdAt: recordingCreatedAt,
+                  durationAtPause: Math.max(durationAtStop, 0),
                 };
                 await saveTempRecordingMetadata(tempMetadata);
                 tempRecordingUri.current = tempUri;
                 
-                console.log('Temp backup created successfully');
+                console.log('Temp backup created successfully (finalized and valid)');
               }
+
+              // Deactivate keep-awake
+              try {
+                deactivateKeepAwake('recording');
+              } catch (e) {
+                console.log('Could not deactivate keep-awake:', e);
+              }
+
+              // Reset recording state
+              setRecording(null);
+              setIsRecording(false);
+              setIsPaused(false);
+              setRecordingDuration(0);
+              setRecordingStartTime(0);
+              setPausedDuration(0);
+              pauseStartTime.current = 0;
+              wasRecordingBeforeBackground.current = true; // Flag to know we had a recording
               
             } catch (error) {
               console.error('Error creating temp backup:', error);

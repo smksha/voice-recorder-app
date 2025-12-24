@@ -83,9 +83,14 @@ export const useAudioPlayer = (): UseAudioPlayerReturn => {
         setSound(newSound);
         setCurrentlyPlayingId(id);
         setIsPlaying(true);
-      } catch (error) {
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         console.error('Error playing recording:', error);
-        Alert.alert('Playback Error', 'Unable to play this recording.');
+        console.error('Recording URI:', uri);
+        Alert.alert(
+          'Playback Error',
+          `Unable to play this recording.\n\nDetails: ${errorMessage}`
+        );
         setIsPlaying(false);
         setCurrentlyPlayingId(null);
       }
