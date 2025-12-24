@@ -1,12 +1,9 @@
 import React from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-} from 'react-native';
+import { View, Text } from 'react-native';
 import { Recording } from '../types/Recording';
 import { formatDuration, formatDateTime } from '../utils/formatters';
+import { IconButton } from './common';
+import { styles } from './RecordingItem.styles';
 
 interface RecordingItemProps {
   recording: Recording;
@@ -55,108 +52,34 @@ export const RecordingItem: React.FC<RecordingItemProps> = ({
       <View style={styles.buttonContainer}>
         {isCurrentlyPlaying ? (
           <>
-            <TouchableOpacity
-              style={[styles.button, styles.playPauseButton]}
+            <IconButton
+              icon={isPlaying ? '⏸' : '▶️'}
               onPress={isPlaying ? onPause : onPlay}
-            >
-              <Text style={styles.buttonText}>{isPlaying ? '⏸' : '▶️'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, styles.stopButton]}
+              variant="primary"
+              size="medium"
+            />
+            <IconButton
+              icon="⏹"
               onPress={onStop}
-            >
-              <Text style={styles.buttonText}>⏹</Text>
-            </TouchableOpacity>
+              variant="secondary"
+              size="medium"
+            />
           </>
         ) : (
-          <TouchableOpacity
-            style={[styles.button, styles.playPauseButton]}
+          <IconButton
+            icon="▶️"
             onPress={onPlay}
-          >
-            <Text style={styles.buttonText}>▶️</Text>
-          </TouchableOpacity>
+            variant="primary"
+            size="medium"
+          />
         )}
-        <TouchableOpacity
-          style={[styles.button, styles.deleteButton]}
+        <IconButton
+          icon="🗑️"
           onPress={onDelete}
-        >
-          <Text style={styles.buttonText}>🗑️</Text>
-        </TouchableOpacity>
+          variant="danger"
+          size="medium"
+        />
       </View>
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 16,
-    marginHorizontal: 16,
-    marginVertical: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  infoContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  dateTime: {
-    fontSize: 14,
-    color: '#666666',
-    flex: 1,
-  },
-  durationContainer: {
-    backgroundColor: '#f0f0f0',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  duration: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333333',
-    fontVariant: ['tabular-nums'],
-  },
-  progressContainer: {
-    height: 4,
-    backgroundColor: '#e0e0e0',
-    borderRadius: 2,
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-  progressBar: {
-    height: '100%',
-    backgroundColor: '#007AFF',
-    borderRadius: 2,
-  },
-  buttonContainer: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 8,
-  },
-  button: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playPauseButton: {
-    backgroundColor: '#007AFF',
-  },
-  stopButton: {
-    backgroundColor: '#666666',
-  },
-  deleteButton: {
-    backgroundColor: '#FF3B30',
-  },
-  buttonText: {
-    fontSize: 18,
-  },
-});

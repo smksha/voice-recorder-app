@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, Animated } from 'react-native';
 import { formatDuration } from '../utils/formatters';
+import { Waveform } from './Waveform';
+import { styles } from './RecordButton.styles';
 
 interface RecordButtonProps {
   isRecording: boolean;
@@ -28,13 +30,13 @@ export const RecordButton: React.FC<RecordButtonProps> = ({
       const animation = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
-            toValue: 1.2,
-            duration: 500,
+            toValue: 1.1,
+            duration: 600,
             useNativeDriver: true,
           }),
           Animated.timing(pulseAnim, {
             toValue: 1,
-            duration: 500,
+            duration: 600,
             useNativeDriver: true,
           }),
         ])
@@ -64,6 +66,14 @@ export const RecordButton: React.FC<RecordButtonProps> = ({
 
   return (
     <View style={styles.container}>
+      {/* Waveform visualization */}
+      {isRecording && (
+        <View style={styles.waveformContainer}>
+          <Waveform isRecording={isRecording} isPaused={isPaused} />
+        </View>
+      )}
+
+      {/* Duration display */}
       {isRecording && (
         <View style={styles.durationContainer}>
           <View style={[styles.recordingIndicator, isPaused && styles.pausedIndicator]} />
@@ -72,6 +82,7 @@ export const RecordButton: React.FC<RecordButtonProps> = ({
         </View>
       )}
 
+      {/* Buttons */}
       <View style={styles.buttonsRow}>
         {isRecording && (
           <TouchableOpacity
@@ -107,9 +118,7 @@ export const RecordButton: React.FC<RecordButtonProps> = ({
           </Animated.View>
         </TouchableOpacity>
 
-        {isRecording && (
-          <View style={styles.placeholderButton} />
-        )}
+        {isRecording && <View style={styles.placeholderButton} />}
       </View>
 
       <Text style={styles.hint}>
@@ -122,121 +131,3 @@ export const RecordButton: React.FC<RecordButtonProps> = ({
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    alignItems: 'center',
-    paddingVertical: 24,
-    paddingBottom: 40,
-    backgroundColor: '#f8f8f8',
-    borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-  },
-  durationContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    backgroundColor: '#fff',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  recordingIndicator: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#FF3B30',
-    marginRight: 8,
-  },
-  pausedIndicator: {
-    backgroundColor: '#FF9500',
-  },
-  durationText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    fontVariant: ['tabular-nums'],
-  },
-  pausedText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF9500',
-    marginLeft: 8,
-  },
-  buttonsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  buttonWrapper: {
-    marginHorizontal: 16,
-  },
-  button: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 5,
-    borderWidth: 4,
-    borderColor: '#e0e0e0',
-  },
-  buttonRecording: {
-    borderColor: '#FF3B30',
-  },
-  buttonPaused: {
-    borderColor: '#FF9500',
-  },
-  innerButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#FF3B30',
-  },
-  innerButtonRecording: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-  },
-  secondaryButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  pauseButton: {
-    backgroundColor: '#FF9500',
-  },
-  resumeButton: {
-    backgroundColor: '#34C759',
-  },
-  secondaryButtonText: {
-    fontSize: 24,
-  },
-  placeholderButton: {
-    width: 56,
-    height: 56,
-  },
-  hint: {
-    fontSize: 14,
-    color: '#888',
-    textAlign: 'center',
-  },
-});
