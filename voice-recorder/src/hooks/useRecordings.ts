@@ -91,6 +91,10 @@ export const useRecordings = (): UseRecordingsReturn => {
   const recordingStartTimeRef = useRef(recordingStartTime);
   const pausedDurationRef = useRef(pausedDuration);
   const recordingsRef = useRef(recordings);
+  const backgroundSaveTimer = useRef<NodeJS.Timeout | null>(null);
+  // iOS now gives us up to 30 seconds of background time via native beginBackgroundTask
+  // Use 10 seconds delay before saving - gives user time to return
+  const BACKGROUND_SAVE_DELAY = 10000;
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -190,9 +194,16 @@ export const useRecordings = (): UseRecordingsReturn => {
         // App came to foreground
         console.log('App active');
 
-        // Auto-resume ONLY if it was a phone call interruption (recording is still paused, not saved)
-        if (wasInterruptedByPhoneCall.current && wasRecordingBeforeBackground.current && recordingRef.current && isPausedRef.current) {
-          console.log('Phone call ended - auto-resuming recording...');
+        // Cancel any pending save timer
+        if (backgroundSaveTimer.current) {
+          clearTimeout(backgroundSaveTimer.current);
+          backgroundSaveTimer.current = null;
+          console.log('Cancelled background save timer');
+        }
+
+        // Auto-resume if we were recording before backgrounding and recording is still paused (not saved)
+        if (wasRecordingBeforeBackground.current && recordingRef.current && isPausedRef.current) {
+          console.log('Resuming recording...');
           try {
             // Re-set audio mode before resuming
             await Audio.setAudioModeAsync({
@@ -216,15 +227,15 @@ export const useRecordings = (): UseRecordingsReturn => {
             setIsPaused(false);
             wasRecordingBeforeBackground.current = false;
             wasInterruptedByPhoneCall.current = false;
-            console.log('Recording resumed automatically after phone call');
+            console.log('Recording resumed automatically');
           } catch (error) {
             console.error('Error auto-resuming recording:', error);
             // If resume fails, refresh to show any saved recordings
             refreshRecordings();
           }
         } else {
-          // For non-phone-call backgrounding, recording was already saved
-          // Refresh recordings list to show the saved recording
+          // Recording was already saved or no recording was in progress
+          // Refresh recordings list to show any saved recordings
           refreshRecordings();
         }
       } else if (nextAppState === 'background' || nextAppState === 'inactive') {
@@ -233,7 +244,7 @@ export const useRecordings = (): UseRecordingsReturn => {
           
           // Check if this is a phone call interruption
           if (wasInterruptedByPhoneCall.current) {
-            // Phone call: just pause, will resume after call ends
+            // Phone call: just pause, will resume after call ends (no save timer)
             console.log('Phone call detected - pausing recording, will resume after call');
             try {
               await recordingRef.current.pauseAsync();
@@ -244,15 +255,31 @@ export const useRecordings = (): UseRecordingsReturn => {
               console.error('Error pausing recording:', error);
             }
           } else {
-            // User backgrounding: SAVE IMMEDIATELY to prevent data loss on kill
-            console.log('App backgrounding - saving recording immediately...');
-            console.log('Recording ref exists:', !!recordingRef.current);
-            console.log('Is recording:', isRecordingRef.current);
+            // User backgrounding: Pause and start save timer
+            // iOS native code (beginBackgroundTask) gives us up to 30 seconds
+            // Timer will fire and save the recording if user doesn't return
+            console.log('App backgrounding - pausing recording, starting save timer...');
             try {
-              await saveCurrentRecording();
-              console.log('Save completed successfully');
-            } catch (saveError) {
-              console.error('Save failed:', saveError);
+              await recordingRef.current.pauseAsync();
+              setIsPaused(true);
+              pauseStartTime.current = Date.now();
+              wasRecordingBeforeBackground.current = true;
+              console.log('Recording paused');
+
+              // Start save timer - will save if user doesn't return within BACKGROUND_SAVE_DELAY
+              backgroundSaveTimer.current = setTimeout(async () => {
+                console.log('Background save timer fired - saving recording...');
+                try {
+                  await saveCurrentRecording();
+                  console.log('Recording saved by background timer');
+                } catch (error) {
+                  console.error('Failed to save in background:', error);
+                }
+              }, BACKGROUND_SAVE_DELAY);
+              console.log(`Save timer started (${BACKGROUND_SAVE_DELAY / 1000}s)`);
+              
+            } catch (error) {
+              console.error('Error pausing recording:', error);
             }
           }
           
@@ -266,6 +293,11 @@ export const useRecordings = (): UseRecordingsReturn => {
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => {
       subscription.remove();
+      // Clear any pending save timer on cleanup
+      if (backgroundSaveTimer.current) {
+        clearTimeout(backgroundSaveTimer.current);
+        backgroundSaveTimer.current = null;
+      }
     };
   }, [saveCurrentRecording, refreshRecordings]);
 
