@@ -102,20 +102,29 @@ export const useRecordings = (): UseRecordingsReturn => {
     recordingsRef.current = recordings;
   }, [isRecording, isPaused, recording, recordingStartTime, pausedDuration, recordings]);
 
-  // Function to save recording (used by background timer and stop button)
+  // Function to save recording (used by background handler and stop button)
   const saveCurrentRecording = useCallback(async () => {
     const currentRecording = recordingRef.current;
-    if (!currentRecording) return;
+    console.log('saveCurrentRecording called, recording exists:', !!currentRecording);
+    
+    if (!currentRecording) {
+      console.log('No recording to save, returning early');
+      return;
+    }
 
     try {
+      console.log('Starting save process...');
       // Calculate final duration
       let finalDuration = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
       if (pauseStartTime.current > 0) {
         finalDuration -= (Date.now() - pauseStartTime.current);
       }
+      console.log('Duration calculated:', finalDuration);
 
       // Stop and save the recording
+      console.log('Stopping recording...');
       await currentRecording.stopAndUnloadAsync();
+      console.log('Recording stopped');
 
       // Reset audio mode
       await Audio.setAudioModeAsync({
@@ -123,18 +132,23 @@ export const useRecordings = (): UseRecordingsReturn => {
         interruptionModeIOS: InterruptionModeIOS.DoNotMix,
         interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
       });
+      console.log('Audio mode reset');
 
       const uri = currentRecording.getURI();
+      console.log('Recording URI:', uri);
+      
       if (uri) {
         const id = Date.now().toString();
         const filename = `recording_${id}.m4a`;
         const newUri = `${getRecordingsDirectory()}${filename}`;
+        console.log('Moving to:', newUri);
 
         // Move recording to our directory
         await FileSystem.moveAsync({
           from: uri,
           to: newUri,
         });
+        console.log('File moved');
 
         const newRecording: Recording = {
           id,
@@ -146,9 +160,12 @@ export const useRecordings = (): UseRecordingsReturn => {
 
         const updatedRecordings = [newRecording, ...recordingsRef.current];
         await saveRecordingMetadata(updatedRecordings);
-        setRecordings(updatedRecordings);
+        console.log('Metadata saved');
         
-        console.log('Recording saved successfully');
+        setRecordings(updatedRecordings);
+        console.log('Recording saved successfully!');
+      } else {
+        console.log('No URI found for recording');
       }
 
       // Reset state
@@ -229,7 +246,14 @@ export const useRecordings = (): UseRecordingsReturn => {
           } else {
             // User backgrounding: SAVE IMMEDIATELY to prevent data loss on kill
             console.log('App backgrounding - saving recording immediately...');
-            await saveCurrentRecording();
+            console.log('Recording ref exists:', !!recordingRef.current);
+            console.log('Is recording:', isRecordingRef.current);
+            try {
+              await saveCurrentRecording();
+              console.log('Save completed successfully');
+            } catch (saveError) {
+              console.error('Save failed:', saveError);
+            }
           }
           
         } else if (wasInterruptedByPhoneCall.current && isPausedRef.current) {
