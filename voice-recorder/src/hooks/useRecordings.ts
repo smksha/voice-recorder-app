@@ -260,11 +260,10 @@ export const useRecordings = (): UseRecordingsReturn => {
         // App came to foreground
         console.log('App active');
 
-        // If we were recording before backgrounding (phone call case - paused but not stopped)
+        // CASE 1: Phone call interruption - recording was paused, resume it
         if (wasInterruptedByPhoneCall.current && recordingRef.current && isPausedRef.current) {
           console.log('Resuming recording after phone call...');
           try {
-            // Re-set audio mode before resuming
             await Audio.setAudioModeAsync({
               allowsRecordingIOS: true,
               playsInSilentModeIOS: true,
@@ -277,7 +276,6 @@ export const useRecordings = (): UseRecordingsReturn => {
 
             await recordingRef.current.startAsync();
             
-            // Track how long we were paused
             if (pauseStartTime.current > 0) {
               setPausedDuration(prev => prev + (Date.now() - pauseStartTime.current));
               pauseStartTime.current = 0;
@@ -292,53 +290,83 @@ export const useRecordings = (): UseRecordingsReturn => {
             console.error('Error auto-resuming recording:', error);
             refreshRecordings();
           }
-        } else if (wasRecordingBeforeBackground.current && tempRecordingUri.current) {
-          // User backgrounded and we stopped recording - convert temp to permanent recording
-          console.log('User returned from background - saving temp backup as permanent recording');
-          
+        }
+        // CASE 2: User backgrounded app (not killed) - start new recording to "resume"
+        // We detect this by: wasRecordingBeforeBackground is TRUE (in-memory flag still set)
+        // Note: recording object is null because we stopped it for the hidden backup
+        else if (wasRecordingBeforeBackground.current && tempRecordingUri.current) {
+          console.log('User returned from background - starting new recording to resume...');
           try {
-            // Load the temp metadata
-            const tempMetadata = await loadTempRecordingMetadata();
-            if (tempMetadata) {
-              // Move temp file to permanent recordings directory
-              const id = Date.now().toString();
-              const filename = `recording_${id}.m4a`;
-              const newUri = `${getRecordingsDirectory()}${filename}`;
-              
-              await FileSystem.moveAsync({
-                from: tempRecordingUri.current!,
-                to: newUri,
-              });
-              
-              const recoveredRecording: Recording = {
-                id,
-                uri: newUri,
-                filename,
-                createdAt: tempMetadata.createdAt,
-                duration: tempMetadata.durationAtPause,
-              };
-              
-              // Add to recordings list
-              const currentRecordings = await loadRecordingsMetadata();
-              const updatedRecordings = [recoveredRecording, ...currentRecordings];
-              await saveRecordingMetadata(updatedRecordings);
-              setRecordings(updatedRecordings);
-              
-              console.log('Recording saved successfully from background pause');
+            // Delete the hidden backup since we're resuming
+            console.log('Deleting hidden temp backup:', tempRecordingUri.current);
+            await deleteTempRecordingFile(tempRecordingUri.current);
+            await clearTempRecordingMetadata();
+            tempRecordingUri.current = null;
+            
+            // Reset flags
+            wasRecordingBeforeBackground.current = false;
+            
+            // Request permissions
+            const { status } = await Audio.requestPermissionsAsync();
+            if (status !== 'granted') {
+              console.error('Permission denied');
+              setIsRecording(false);
+              setIsPaused(false);
+              refreshRecordings();
+              return;
             }
+
+            await Audio.setAudioModeAsync({
+              allowsRecordingIOS: true,
+              playsInSilentModeIOS: true,
+              staysActiveInBackground: true,
+              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+              shouldDuckAndroid: false,
+              playThroughEarpieceAndroid: false,
+            });
+
+            const newRecording = new Audio.Recording();
+            
+            newRecording.setOnRecordingStatusUpdate((recStatus) => {
+              if (recStatus.isRecording === false && isRecordingRef.current && !isPausedRef.current) {
+                console.log('Recording interrupted by phone call or system');
+                wasInterruptedByPhoneCall.current = true;
+                setIsPaused(true);
+                pauseStartTime.current = Date.now();
+                wasRecordingBeforeBackground.current = true;
+              }
+            });
+            
+            await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+            await newRecording.startAsync();
+
+            try {
+              await activateKeepAwakeAsync('recording');
+            } catch (e) {
+              console.log('Could not activate keep-awake:', e);
+            }
+
+            setRecording(newRecording);
+            setIsRecording(true);
+            setIsPaused(false);
+            setRecordingStartTime(Date.now());
+            setRecordingDuration(0);
+            setPausedDuration(0);
+            pauseStartTime.current = 0;
+            createdAtRef.current = new Date().toISOString();
+            
+            console.log('New recording started (resume from background)');
+            
           } catch (error) {
-            console.error('Error recovering temp recording:', error);
+            console.error('Error resuming recording:', error);
+            setIsRecording(false);
+            setIsPaused(false);
+            refreshRecordings();
           }
-          
-          await clearTempRecordingMetadata();
-          tempRecordingUri.current = null;
-          wasRecordingBeforeBackground.current = false;
-          createdAtRef.current = '';
-          
-          // Refresh to show the saved recording
-          refreshRecordings();
         } else {
-          // No recording was in progress or already handled
+          // CASE 3: No active recording session - just refresh list
+          // (App was killed case is handled in init useEffect)
           refreshRecordings();
         }
       } else if (nextAppState === 'background' || nextAppState === 'inactive') {
@@ -347,8 +375,8 @@ export const useRecordings = (): UseRecordingsReturn => {
           
           // Check if this is a phone call interruption
           if (wasInterruptedByPhoneCall.current) {
-            // Phone call: just pause, will resume after call ends
-            console.log('Phone call detected - pausing recording, will resume after call');
+            // Phone call: just pause, will resume after call ends (no hidden backup needed)
+            console.log('Phone call detected - pausing recording');
             try {
               await recordingRef.current.pauseAsync();
               setIsPaused(true);
@@ -358,16 +386,20 @@ export const useRecordings = (): UseRecordingsReturn => {
               console.error('Error pausing recording:', error);
             }
           } else {
-            // User backgrounding: STOP recording and save as temp backup (creates valid file)
-            console.log('App backgrounding - stopping recording and saving temp backup...');
+            // User backgrounding: Stop recording and save hidden backup (for app kill case)
+            // When user returns, we'll start a new recording to simulate "resume"
+            console.log('App backgrounding - stopping recording and creating hidden backup...');
             try {
               const currentRecording = recordingRef.current;
               
               // Calculate duration
-              let durationAtStop = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
+              const durationAtStop = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
               const recordingCreatedAt = createdAtRef.current || new Date().toISOString();
               
-              // Actually stop the recording to finalize the file properly
+              // Mark that we were recording (in-memory flag for detecting return from background)
+              wasRecordingBeforeBackground.current = true;
+              
+              // Stop the recording to finalize the file (creates valid audio)
               await currentRecording.stopAndUnloadAsync();
               console.log('Recording stopped and finalized');
 
@@ -378,21 +410,19 @@ export const useRecordings = (): UseRecordingsReturn => {
                 interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
               });
 
-              // Get the finalized recording URI
               const currentUri = currentRecording.getURI();
               if (currentUri) {
-                // Create temp backup filename
-                const tempFilename = `temp_backup_${Date.now()}.m4a`;
+                // Move to hidden/temp location
+                const tempFilename = `hidden_backup_${Date.now()}.m4a`;
                 const tempUri = `${getTempRecordingsDirectory()}${tempFilename}`;
                 
-                // Move the finalized recording to temp location
-                console.log('Moving finalized recording to temp backup:', tempUri);
+                console.log('Moving finalized recording to hidden backup:', tempUri);
                 await FileSystem.moveAsync({
                   from: currentUri,
                   to: tempUri,
                 });
                 
-                // Save temp recording metadata
+                // Save hidden recording metadata
                 const tempMetadata: TempRecordingMetadata = {
                   uri: tempUri,
                   filename: tempFilename,
@@ -402,33 +432,29 @@ export const useRecordings = (): UseRecordingsReturn => {
                 await saveTempRecordingMetadata(tempMetadata);
                 tempRecordingUri.current = tempUri;
                 
-                console.log('Temp backup created successfully (finalized and valid)');
+                console.log('Hidden backup created (valid audio file)');
               }
 
-              // Deactivate keep-awake
+              // Deactivate keep-awake while in background
               try {
                 deactivateKeepAwake('recording');
               } catch (e) {
                 console.log('Could not deactivate keep-awake:', e);
               }
 
-              // Reset recording state
+              // Clear the recording object but keep UI state showing "paused"
+              // so user sees the paused state when they return
               setRecording(null);
-              setIsRecording(false);
-              setIsPaused(false);
-              setRecordingDuration(0);
-              setRecordingStartTime(0);
-              setPausedDuration(0);
-              pauseStartTime.current = 0;
-              wasRecordingBeforeBackground.current = true; // Flag to know we had a recording
+              setIsPaused(true);
+              pauseStartTime.current = Date.now();
+              // isRecording stays true so UI shows recording controls
               
             } catch (error) {
-              console.error('Error creating temp backup:', error);
+              console.error('Error creating hidden backup:', error);
             }
           }
           
         } else if (wasInterruptedByPhoneCall.current && isPausedRef.current) {
-          // Already paused by phone call interruption
           console.log('Already paused by phone call, waiting for call to end...');
         }
       }
