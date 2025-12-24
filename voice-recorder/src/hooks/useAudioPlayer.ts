@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Audio, AVPlaybackStatus } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
+import { Alert } from 'react-native';
 
 interface UseAudioPlayerReturn {
   isPlaying: boolean;
@@ -45,6 +47,20 @@ export const useAudioPlayer = (): UseAudioPlayerReturn => {
   const playRecording = useCallback(
     async (id: string, uri: string) => {
       try {
+        // Check if file exists first
+        const fileInfo = await FileSystem.getInfoAsync(uri);
+        if (!fileInfo.exists) {
+          console.error('Recording file not found:', uri);
+          Alert.alert(
+            'File Not Found',
+            'This recording file no longer exists. It may have been deleted when the app was reinstalled.',
+            [{ text: 'OK' }]
+          );
+          setIsPlaying(false);
+          setCurrentlyPlayingId(null);
+          return;
+        }
+
         // Stop any existing playback
         if (sound) {
           await sound.unloadAsync();
@@ -69,6 +85,7 @@ export const useAudioPlayer = (): UseAudioPlayerReturn => {
         setIsPlaying(true);
       } catch (error) {
         console.error('Error playing recording:', error);
+        Alert.alert('Playback Error', 'Unable to play this recording.');
         setIsPlaying(false);
         setCurrentlyPlayingId(null);
       }

@@ -52,3 +52,31 @@ export const deleteRecordingFile = async (uri: string): Promise<void> => {
     throw error;
   }
 };
+
+// Clean up recordings whose files no longer exist (e.g., after app reinstall)
+export const cleanupStaleRecordings = async (): Promise<Recording[]> => {
+  try {
+    const recordings = await loadRecordingsMetadata();
+    const validRecordings: Recording[] = [];
+    
+    for (const recording of recordings) {
+      const fileInfo = await FileSystem.getInfoAsync(recording.uri);
+      if (fileInfo.exists) {
+        validRecordings.push(recording);
+      } else {
+        console.log('Removing stale recording (file not found):', recording.filename);
+      }
+    }
+    
+    // Save cleaned up list if any were removed
+    if (validRecordings.length !== recordings.length) {
+      await saveRecordingMetadata(validRecordings);
+      console.log(`Cleaned up ${recordings.length - validRecordings.length} stale recordings`);
+    }
+    
+    return validRecordings;
+  } catch (error) {
+    console.error('Error cleaning up stale recordings:', error);
+    return [];
+  }
+};

@@ -9,6 +9,7 @@ import {
   deleteRecordingFile,
   ensureRecordingsDirectory,
   getRecordingsDirectory,
+  cleanupStaleRecordings,
 } from '../utils/storage';
 
 interface UseRecordingsReturn {
@@ -38,10 +39,14 @@ export const useRecordings = (): UseRecordingsReturn => {
   const wasRecordingBeforeBackground = useRef<boolean>(false);
   const wasInterruptedByPhoneCall = useRef<boolean>(false);
 
-  const refreshRecordings = useCallback(async () => {
+  const refreshRecordings = useCallback(async (cleanup: boolean = false) => {
     setIsLoading(true);
     try {
-      const loadedRecordings = await loadRecordingsMetadata();
+      // If cleanup is true, remove recordings whose files no longer exist
+      const loadedRecordings = cleanup 
+        ? await cleanupStaleRecordings()
+        : await loadRecordingsMetadata();
+      
       // Sort by date, newest first
       loadedRecordings.sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -73,7 +78,8 @@ export const useRecordings = (): UseRecordingsReturn => {
       }
       
       await ensureRecordingsDirectory();
-      await refreshRecordings();
+      // Cleanup stale recordings on app start (files that no longer exist)
+      await refreshRecordings(true);
     };
     init();
   }, [refreshRecordings]);
