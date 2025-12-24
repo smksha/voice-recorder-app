@@ -36,6 +36,7 @@ export const useRecordings = (): UseRecordingsReturn => {
   const [pausedDuration, setPausedDuration] = useState<number>(0);
   const pauseStartTime = useRef<number>(0);
   const wasRecordingBeforeBackground = useRef<boolean>(false);
+  const wasInterruptedByPhoneCall = useRef<boolean>(false);
 
   const refreshRecordings = useCallback(async () => {
     setIsLoading(true);
@@ -155,6 +156,7 @@ export const useRecordings = (): UseRecordingsReturn => {
       setPausedDuration(0);
       pauseStartTime.current = 0;
       wasRecordingBeforeBackground.current = false;
+      wasInterruptedByPhoneCall.current = false;
     } catch (error) {
       console.error('Error saving recording:', error);
     }
@@ -199,6 +201,7 @@ export const useRecordings = (): UseRecordingsReturn => {
             
             setIsPaused(false);
             wasRecordingBeforeBackground.current = false;
+            wasInterruptedByPhoneCall.current = false;
             console.log('Recording resumed automatically');
           } catch (error) {
             console.error('Error auto-resuming recording:', error);
@@ -222,16 +225,25 @@ export const useRecordings = (): UseRecordingsReturn => {
             wasRecordingBeforeBackground.current = true;
             console.log('Recording paused');
 
-            // Start a timer - if user doesn't return within BACKGROUND_SAVE_DELAY, save the recording
-            // This protects against the app being killed
-            backgroundSaveTimer.current = setTimeout(async () => {
-              console.log('Background timeout - saving recording to prevent data loss...');
-              await saveCurrentRecording();
-            }, BACKGROUND_SAVE_DELAY);
+            // Only start save timer if NOT a phone call interruption
+            // Phone calls: pause indefinitely (user will return after call)
+            // User backgrounding: save after delay (user might kill app)
+            if (!wasInterruptedByPhoneCall.current) {
+              backgroundSaveTimer.current = setTimeout(async () => {
+                console.log('Background timeout - saving recording to prevent data loss...');
+                await saveCurrentRecording();
+              }, BACKGROUND_SAVE_DELAY);
+              console.log('Started background save timer (5s)');
+            } else {
+              console.log('Phone call detected - skipping save timer, will resume after call');
+            }
             
           } catch (error) {
             console.error('Error pausing recording:', error);
           }
+        } else if (wasInterruptedByPhoneCall.current && isPausedRef.current) {
+          // Already paused by phone call interruption, don't start timer
+          console.log('Already paused by phone call, waiting for call to end...');
         }
       }
     };
@@ -283,11 +295,12 @@ export const useRecordings = (): UseRecordingsReturn => {
       // Create a new recording instance
       const newRecording = new Audio.Recording();
       
-      // Set up status update callback to handle interruptions
+      // Set up status update callback to handle interruptions (e.g., phone calls)
       newRecording.setOnRecordingStatusUpdate((status) => {
-        if (status.isRecording === false && isRecording && !isPaused) {
+        if (status.isRecording === false && isRecordingRef.current && !isPausedRef.current) {
           // Recording was interrupted externally (e.g., phone call)
-          console.log('Recording interrupted externally');
+          console.log('Recording interrupted by phone call or system');
+          wasInterruptedByPhoneCall.current = true;
           setIsPaused(true);
           pauseStartTime.current = Date.now();
           wasRecordingBeforeBackground.current = true;
@@ -309,6 +322,7 @@ export const useRecordings = (): UseRecordingsReturn => {
       setRecordingDuration(0);
       setPausedDuration(0);
       wasRecordingBeforeBackground.current = false;
+      wasInterruptedByPhoneCall.current = false;
     } catch (error) {
       console.error('Error starting recording:', error);
       // Reset audio mode on error
@@ -356,6 +370,7 @@ export const useRecordings = (): UseRecordingsReturn => {
       
       setIsPaused(false);
       wasRecordingBeforeBackground.current = false;
+      wasInterruptedByPhoneCall.current = false;
       console.log('Recording resumed');
     } catch (error) {
       console.error('Error resuming recording:', error);
@@ -415,6 +430,7 @@ export const useRecordings = (): UseRecordingsReturn => {
       setPausedDuration(0);
       pauseStartTime.current = 0;
       wasRecordingBeforeBackground.current = false;
+      wasInterruptedByPhoneCall.current = false;
     } catch (error) {
       console.error('Error stopping recording:', error);
     }
