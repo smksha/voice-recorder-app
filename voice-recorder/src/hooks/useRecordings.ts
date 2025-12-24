@@ -92,9 +92,10 @@ export const useRecordings = (): UseRecordingsReturn => {
   const pausedDurationRef = useRef(pausedDuration);
   const recordingsRef = useRef(recordings);
   const backgroundSaveTimer = useRef<NodeJS.Timeout | null>(null);
-  // iOS now gives us up to 30 seconds of background time via native beginBackgroundTask
-  // Use 10 seconds delay before saving - gives user time to return
-  const BACKGROUND_SAVE_DELAY = 10000;
+  // Use 3 seconds delay before saving
+  // Shorter delay = better protection against app kill, but less time to return
+  // Note: If app is killed within 3 seconds, recording may be lost (iOS limitation)
+  const BACKGROUND_SAVE_DELAY = 3000;
 
   // Keep refs in sync with state
   useEffect(() => {
