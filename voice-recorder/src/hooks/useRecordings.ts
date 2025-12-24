@@ -19,6 +19,7 @@ interface UseRecordingsReturn {
   isPaused: boolean;
   recordingDuration: number;
   isLoading: boolean;
+  isSaving: boolean;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
   pauseRecording: () => Promise<void>;
@@ -33,6 +34,7 @@ export const useRecordings = (): UseRecordingsReturn => {
   const [isPaused, setIsPaused] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number>(0);
   const [pausedDuration, setPausedDuration] = useState<number>(0);
@@ -103,8 +105,9 @@ export const useRecordings = (): UseRecordingsReturn => {
     recordingsRef.current = recordings;
   }, [isRecording, isPaused, recording, recordingStartTime, pausedDuration, recordings]);
 
-  // Handle app state changes - MINIMAL VERSION
-  // Only handle phone call interruptions - everything else continues naturally
+  // Handle app state changes
+  // Phone call: pause/resume
+  // Background: save recording (native code gives us time via beginBackgroundTask)
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
       if (nextAppState === 'active') {
@@ -139,23 +142,78 @@ export const useRecordings = (): UseRecordingsReturn => {
           }
         }
         
-        // Refresh list when coming to foreground (shows any new recordings)
+        // Refresh list when coming to foreground
         refreshRecordings();
         
       } else if (nextAppState === 'background' || nextAppState === 'inactive') {
-        // Phone call interruption: pause recording
-        if (wasInterruptedByPhoneCall.current && isRecordingRef.current && recordingRef.current && !isPausedRef.current) {
-          console.log('Phone call - pausing...');
-          try {
-            await recordingRef.current.pauseAsync();
-            setIsPaused(true);
-            pauseStartTime.current = Date.now();
-          } catch (error) {
-            console.error('Error pausing:', error);
+        // App going to background
+        if (isRecordingRef.current && recordingRef.current && !isPausedRef.current) {
+          
+          if (wasInterruptedByPhoneCall.current) {
+            // Phone call: just pause (will resume after call)
+            console.log('Phone call - pausing...');
+            try {
+              await recordingRef.current.pauseAsync();
+              setIsPaused(true);
+              pauseStartTime.current = Date.now();
+            } catch (error) {
+              console.error('Error pausing:', error);
+            }
+          } else {
+            // User backgrounded or app being killed: SAVE recording
+            // Native code (AppDelegate) gives us ~25 seconds via beginBackgroundTask
+            console.log('Background - saving recording...');
+            setIsSaving(true);
+            
+            try {
+              const currentRecording = recordingRef.current;
+              const duration = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
+              
+              await currentRecording.stopAndUnloadAsync();
+
+              await Audio.setAudioModeAsync({
+                allowsRecordingIOS: false,
+              });
+
+              const uri = currentRecording.getURI();
+              if (uri) {
+                const id = Date.now().toString();
+                const filename = `recording_${id}.m4a`;
+                const newUri = `${getRecordingsDirectory()}${filename}`;
+
+                await FileSystem.moveAsync({ from: uri, to: newUri });
+
+                const newRec: Recording = {
+                  id,
+                  uri: newUri,
+                  filename,
+                  createdAt: createdAtRef.current || new Date().toISOString(),
+                  duration: Math.max(duration, 0),
+                };
+
+                const updated = [newRec, ...recordingsRef.current];
+                await saveRecordingMetadata(updated);
+                setRecordings(updated);
+                console.log('Recording saved on background');
+              }
+
+              try { deactivateKeepAwake('recording'); } catch {}
+
+              setRecording(null);
+              setIsRecording(false);
+              setIsPaused(false);
+              setRecordingDuration(0);
+              setRecordingStartTime(0);
+              setPausedDuration(0);
+              createdAtRef.current = '';
+              
+            } catch (error) {
+              console.error('Error saving on background:', error);
+            } finally {
+              setIsSaving(false);
+            }
           }
         }
-        // For normal backgrounding: DO NOTHING - recording continues naturally
-        // staysActiveInBackground: true allows recording to continue
       }
     };
 
@@ -208,7 +266,6 @@ export const useRecordings = (): UseRecordingsReturn => {
           wasInterruptedByPhoneCall.current = true;
           setIsPaused(true);
           pauseStartTime.current = Date.now();
-          wasRecordingBeforeBackground.current = true;
         }
       });
       
@@ -234,10 +291,8 @@ export const useRecordings = (): UseRecordingsReturn => {
       setRecordingStartTime(Date.now());
       setRecordingDuration(0);
       setPausedDuration(0);
-      wasRecordingBeforeBackground.current = false;
       wasInterruptedByPhoneCall.current = false;
       createdAtRef.current = new Date().toISOString();
-      tempRecordingUri.current = null;
     } catch (error) {
       console.error('Error starting recording:', error);
       // Reset audio mode on error
@@ -284,7 +339,6 @@ export const useRecordings = (): UseRecordingsReturn => {
       }
       
       setIsPaused(false);
-      wasRecordingBeforeBackground.current = false;
       wasInterruptedByPhoneCall.current = false;
       console.log('Recording resumed');
     } catch (error) {
@@ -295,6 +349,7 @@ export const useRecordings = (): UseRecordingsReturn => {
   const stopRecording = useCallback(async () => {
     if (!recording) return;
 
+    setIsSaving(true);
     try {
       setIsRecording(false);
       setIsPaused(false);
@@ -330,7 +385,7 @@ export const useRecordings = (): UseRecordingsReturn => {
           id,
           uri: newUri,
           filename,
-          createdAt: new Date().toISOString(),
+          createdAt: createdAtRef.current || new Date().toISOString(),
           duration: Math.max(finalDuration, 0),
         };
 
@@ -342,28 +397,19 @@ export const useRecordings = (): UseRecordingsReturn => {
       // Deactivate keep-awake
       try {
         deactivateKeepAwake('recording');
-        console.log('Screen keep-awake deactivated');
-      } catch (e) {
-        console.log('Could not deactivate keep-awake:', e);
-      }
-
-      // Clean up any temp backup
-      if (tempRecordingUri.current) {
-        await deleteTempRecordingFile(tempRecordingUri.current);
-        await clearTempRecordingMetadata();
-        tempRecordingUri.current = null;
-      }
+      } catch {}
 
       setRecording(null);
       setRecordingDuration(0);
       setRecordingStartTime(0);
       setPausedDuration(0);
       pauseStartTime.current = 0;
-      wasRecordingBeforeBackground.current = false;
       wasInterruptedByPhoneCall.current = false;
       createdAtRef.current = '';
     } catch (error) {
       console.error('Error stopping recording:', error);
+    } finally {
+      setIsSaving(false);
     }
   }, [recording, recordingStartTime, pausedDuration, recordings]);
 
@@ -391,6 +437,7 @@ export const useRecordings = (): UseRecordingsReturn => {
     isPaused,
     recordingDuration,
     isLoading,
+    isSaving,
     startRecording,
     stopRecording,
     pauseRecording,

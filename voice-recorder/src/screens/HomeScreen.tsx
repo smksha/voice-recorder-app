@@ -5,12 +5,12 @@ import {
   FlatList,
   SafeAreaView,
   StatusBar,
-  ActivityIndicator,
   Alert,
 } from 'react-native';
 import { useRecordings } from '../hooks/useRecordings';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
 import { RecordingItem, RecordButton, EmptyState } from '../components';
+import { Spinner } from '../components/common';
 import { Recording } from '../types/Recording';
 import { colors } from '../styles';
 import { styles } from './HomeScreen.styles';
@@ -22,6 +22,7 @@ export const HomeScreen: React.FC = () => {
     isPaused,
     recordingDuration,
     isLoading,
+    isSaving,
     startRecording,
     stopRecording,
     pauseRecording,
@@ -102,6 +103,9 @@ export const HomeScreen: React.FC = () => {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor={colors.surface} />
 
+      {/* Full screen spinner when saving */}
+      {isSaving && <Spinner fullScreen text="Saving recording..." />}
+
       <View style={styles.header}>
         <Text style={styles.title}>Voice Recorder</Text>
         <Text style={styles.subtitle}>
@@ -111,10 +115,7 @@ export const HomeScreen: React.FC = () => {
 
       <View style={styles.listContainer}>
         {isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Loading recordings...</Text>
-          </View>
+          <Spinner text="Loading recordings..." />
         ) : recordings.length === 0 ? (
           <EmptyState />
         ) : (

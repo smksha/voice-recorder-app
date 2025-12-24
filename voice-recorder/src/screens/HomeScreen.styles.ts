@@ -28,14 +28,4 @@ export const styles = StyleSheet.create({
   listContent: {
     paddingVertical: spacing.sm,
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: spacing.md,
-    ...typography.body,
-    color: colors.textTertiary,
-  },
 });
