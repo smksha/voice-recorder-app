@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import { AppState, AppStateStatus } from 'react-native';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Recording } from '../types/Recording';
 import {
   loadRecordingsMetadata,
@@ -171,6 +172,14 @@ export const useRecordings = (): UseRecordingsReturn => {
         console.log('Recording saved successfully!');
       } else {
         console.log('No URI found for recording');
+      }
+
+      // Deactivate keep-awake
+      try {
+        deactivateKeepAwake('recording');
+        console.log('Screen keep-awake deactivated');
+      } catch (e) {
+        console.log('Could not deactivate keep-awake:', e);
       }
 
       // Reset state
@@ -359,6 +368,14 @@ export const useRecordings = (): UseRecordingsReturn => {
       // Start recording
       await newRecording.startAsync();
 
+      // Keep screen awake during recording
+      try {
+        await activateKeepAwakeAsync('recording');
+        console.log('Screen keep-awake activated');
+      } catch (e) {
+        console.log('Could not activate keep-awake:', e);
+      }
+
       setRecording(newRecording);
       setIsRecording(true);
       setIsPaused(false);
@@ -466,6 +483,14 @@ export const useRecordings = (): UseRecordingsReturn => {
         const updatedRecordings = [newRecording, ...recordings];
         await saveRecordingMetadata(updatedRecordings);
         setRecordings(updatedRecordings);
+      }
+
+      // Deactivate keep-awake
+      try {
+        deactivateKeepAwake('recording');
+        console.log('Screen keep-awake deactivated');
+      } catch (e) {
+        console.log('Could not deactivate keep-awake:', e);
       }
 
       setRecording(null);
