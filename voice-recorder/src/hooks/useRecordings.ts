@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
-import { AppState, AppStateStatus } from 'react-native';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Recording } from '../types/Recording';
 import {
@@ -94,47 +93,70 @@ export const useRecordings = (): UseRecordingsReturn => {
     };
   }, [isRecording, isPaused, recordingStartTime, pausedDuration]);
 
-  // Handle phone call interruption: auto-resume when call ends
+  // Handle phone call interruption: poll to resume when call ends
   useEffect(() => {
-    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
-      // When app becomes active after phone call, resume recording
-      if (nextAppState === 'active') {
-        if (wasInterruptedByPhoneCall.current && recordingRef.current && isPausedRef.current) {
-          console.log('Phone call ended - resuming recording...');
-          try {
-            // Re-configure audio mode
-            await Audio.setAudioModeAsync({
-              allowsRecordingIOS: true,
-              playsInSilentModeIOS: true,
-              staysActiveInBackground: true,
-              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-              shouldDuckAndroid: false,
-              playThroughEarpieceAndroid: false,
-            });
+    let resumeInterval: NodeJS.Timeout | null = null;
 
-            // Resume the recording
-            await recordingRef.current.startAsync();
-            
-            // Account for paused time
-            if (pauseStartTime.current > 0) {
-              setPausedDuration(prev => prev + (Date.now() - pauseStartTime.current));
-              pauseStartTime.current = 0;
-            }
-            
-            setIsPaused(false);
-            wasInterruptedByPhoneCall.current = false;
-            console.log('Recording resumed after phone call');
-          } catch (error) {
-            console.error('Error resuming after phone call:', error);
-          }
+    const tryResume = async () => {
+      if (!wasInterruptedByPhoneCall.current || !recordingRef.current || !isPausedRef.current) {
+        // Not interrupted or already resumed
+        if (resumeInterval) {
+          clearInterval(resumeInterval);
+          resumeInterval = null;
         }
+        return;
+      }
+
+      console.log('Attempting to resume after phone call...');
+      try {
+        // Re-configure audio mode
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: true,
+          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+          shouldDuckAndroid: false,
+          playThroughEarpieceAndroid: false,
+        });
+
+        // Try to resume the recording
+        await recordingRef.current.startAsync();
+        
+        // Success! Account for paused time
+        if (pauseStartTime.current > 0) {
+          setPausedDuration(prev => prev + (Date.now() - pauseStartTime.current));
+          pauseStartTime.current = 0;
+        }
+        
+        setIsPaused(false);
+        wasInterruptedByPhoneCall.current = false;
+        
+        // Stop polling
+        if (resumeInterval) {
+          clearInterval(resumeInterval);
+          resumeInterval = null;
+        }
+        
+        console.log('Recording resumed after phone call');
+      } catch (error) {
+        // Call still in progress, will try again
+        console.log('Cannot resume yet, call still active');
       }
     };
 
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, []);
+    // Start polling when interrupted
+    if (isPaused && wasInterruptedByPhoneCall.current && !resumeInterval) {
+      console.log('Starting resume polling...');
+      resumeInterval = setInterval(tryResume, 1000); // Try every second
+    }
+
+    return () => {
+      if (resumeInterval) {
+        clearInterval(resumeInterval);
+      }
+    };
+  }, [isPaused]);
 
   const startRecording = useCallback(async () => {
     try {
