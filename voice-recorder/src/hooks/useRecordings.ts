@@ -93,71 +93,6 @@ export const useRecordings = (): UseRecordingsReturn => {
     };
   }, [isRecording, isPaused, recordingStartTime, pausedDuration]);
 
-  // Handle phone call interruption: poll to resume when call ends
-  useEffect(() => {
-    let resumeInterval: NodeJS.Timeout | null = null;
-
-    const tryResume = async () => {
-      if (!wasInterruptedByPhoneCall.current || !recordingRef.current || !isPausedRef.current) {
-        // Not interrupted or already resumed
-        if (resumeInterval) {
-          clearInterval(resumeInterval);
-          resumeInterval = null;
-        }
-        return;
-      }
-
-      console.log('Attempting to resume after phone call...');
-      try {
-        // Re-configure audio mode
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: true,
-          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
-        });
-
-        // Try to resume the recording
-        await recordingRef.current.startAsync();
-        
-        // Success! Account for paused time
-        if (pauseStartTime.current > 0) {
-          setPausedDuration(prev => prev + (Date.now() - pauseStartTime.current));
-          pauseStartTime.current = 0;
-        }
-        
-        setIsPaused(false);
-        wasInterruptedByPhoneCall.current = false;
-        
-        // Stop polling
-        if (resumeInterval) {
-          clearInterval(resumeInterval);
-          resumeInterval = null;
-        }
-        
-        console.log('Recording resumed after phone call');
-      } catch (error) {
-        // Call still in progress, will try again
-        console.log('Cannot resume yet, call still active');
-      }
-    };
-
-    // Start polling when interrupted
-    if (isPaused && wasInterruptedByPhoneCall.current && !resumeInterval) {
-      console.log('Starting resume polling...');
-      resumeInterval = setInterval(tryResume, 1000); // Try every second
-    }
-
-    return () => {
-      if (resumeInterval) {
-        clearInterval(resumeInterval);
-      }
-    };
-  }, [isPaused]);
-
   const startRecording = useCallback(async () => {
     try {
       // Request permissions
@@ -182,13 +117,43 @@ export const useRecordings = (): UseRecordingsReturn => {
       const newRecording = new Audio.Recording();
       
       // Detect phone call interruptions via status updates
-      newRecording.setOnRecordingStatusUpdate((status) => {
-        // If recording stops unexpectedly while we think we're recording = phone call
-        if (!status.isRecording && isRecordingRef.current && !isPausedRef.current) {
-          console.log('Recording interrupted (phone call detected)');
+      newRecording.setOnRecordingStatusUpdate(async (status) => {
+        // If recording stops unexpectedly while we think we're recording = phone call started
+        if (!status.isRecording && isRecordingRef.current && !isPausedRef.current && !wasInterruptedByPhoneCall.current) {
+          console.log('Recording interrupted (phone call started)');
           wasInterruptedByPhoneCall.current = true;
           setIsPaused(true);
           pauseStartTime.current = Date.now();
+        }
+        
+        // If we were interrupted and can record again = phone call ended
+        // status.canRecord indicates if audio session is available
+        if (wasInterruptedByPhoneCall.current && status.canRecord && isPausedRef.current) {
+          console.log('Phone call ended - auto resuming...');
+          try {
+            await Audio.setAudioModeAsync({
+              allowsRecordingIOS: true,
+              playsInSilentModeIOS: true,
+              staysActiveInBackground: true,
+              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+              shouldDuckAndroid: false,
+              playThroughEarpieceAndroid: false,
+            });
+            
+            await newRecording.startAsync();
+            
+            if (pauseStartTime.current > 0) {
+              setPausedDuration(prev => prev + (Date.now() - pauseStartTime.current));
+              pauseStartTime.current = 0;
+            }
+            
+            setIsPaused(false);
+            wasInterruptedByPhoneCall.current = false;
+            console.log('Recording resumed after phone call');
+          } catch (error) {
+            console.log('Could not resume yet:', error);
+          }
         }
       });
       
