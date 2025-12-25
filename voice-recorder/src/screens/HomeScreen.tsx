@@ -74,7 +74,7 @@ export const HomeScreen: React.FC = () => {
           isCurrentlyPlaying={isCurrentlyPlaying}
           playbackPosition={playbackPosition}
           onPlay={() =>
-            isCurrentlyPlaying ? resumePlayback() : playRecording(item.id, item.uri, item.segments)
+            isCurrentlyPlaying ? resumePlayback() : playRecording(item.id, item.uri)
           }
           onPause={pausePlayback}
           onStop={stopPlayback}

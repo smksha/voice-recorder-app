@@ -3,7 +3,6 @@ import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from "expo-av";
 import * as FileSystem from "expo-file-system";
 import { AppState, AppStateStatus } from "react-native";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { Recording } from "../types/Recording";
 import {
@@ -15,21 +14,8 @@ import {
   cleanupStaleRecordings,
 } from "../utils/storage";
 
-// Grace period before saving in background (native task gives ~25s, we use 20s)
+// Grace period before saving in background (20 seconds)
 const BACKGROUND_SAVE_DELAY = 20000;
-
-// Checkpoint interval in milliseconds
-const CHECKPOINT_INTERVAL = 3000; // 3 seconds
-
-// Session storage keys
-const SESSION_KEY = "active_recording_session";
-
-interface ActiveSession {
-  sessionId: string;
-  segments: string[];
-  createdAt: string;
-  totalDuration: number;
-}
 
 interface UseRecordingsReturn {
   recordings: Recording[];
@@ -45,53 +31,6 @@ interface UseRecordingsReturn {
   deleteRecording: (id: string) => Promise<void>;
   refreshRecordings: () => Promise<void>;
 }
-
-// Helper to get segments directory
-const getSegmentsDirectory = (): string => {
-  return `${FileSystem.documentDirectory}segments/`;
-};
-
-// Helper to ensure segments directory exists
-const ensureSegmentsDirectory = async (): Promise<void> => {
-  const dirInfo = await FileSystem.getInfoAsync(getSegmentsDirectory());
-  if (!dirInfo.exists) {
-    await FileSystem.makeDirectoryAsync(getSegmentsDirectory(), {
-      intermediates: true,
-    });
-  }
-};
-
-// Helper to save active session to AsyncStorage
-const saveActiveSession = async (session: ActiveSession): Promise<void> => {
-  try {
-    await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  } catch (error) {
-    console.error("Error saving active session:", error);
-  }
-};
-
-// Helper to load active session from AsyncStorage
-const loadActiveSession = async (): Promise<ActiveSession | null> => {
-  try {
-    const data = await AsyncStorage.getItem(SESSION_KEY);
-    if (data) {
-      return JSON.parse(data) as ActiveSession;
-    }
-    return null;
-  } catch (error) {
-    console.error("Error loading active session:", error);
-    return null;
-  }
-};
-
-// Helper to clear active session
-const clearActiveSession = async (): Promise<void> => {
-  try {
-    await AsyncStorage.removeItem(SESSION_KEY);
-  } catch (error) {
-    console.error("Error clearing active session:", error);
-  }
-};
 
 export const useRecordings = (): UseRecordingsReturn => {
   const [recordings, setRecordings] = useState<Recording[]>([]);
@@ -109,13 +48,6 @@ export const useRecordings = (): UseRecordingsReturn => {
   const createdAtRef = useRef<string>("");
   const wasInterruptedByPhoneCall = useRef<boolean>(false);
   const backgroundSaveTimer = useRef<NodeJS.Timeout | null>(null);
-
-  // Checkpoint/segment refs
-  const sessionId = useRef<string>("");
-  const segments = useRef<string[]>([]);
-  const segmentStartTime = useRef<number>(0);
-  const totalDurationBeforeSegment = useRef<number>(0);
-  const checkpointTimer = useRef<NodeJS.Timeout | null>(null);
 
   // Refs for callbacks (to access current state)
   const recordingRef = useRef(recording);
@@ -161,78 +93,10 @@ export const useRecordings = (): UseRecordingsReturn => {
     }
   }, []);
 
-  // Recover incomplete session on app launch (app was killed)
+  // Initialize on mount
   useEffect(() => {
     const init = async () => {
       await ensureRecordingsDirectory();
-      await ensureSegmentsDirectory();
-
-      // Check for incomplete session from app kill
-      const activeSession = await loadActiveSession();
-      if (activeSession && activeSession.segments.length > 0) {
-        console.log("Recovering session from app kill:", activeSession);
-
-        // Verify segments exist
-        const validSegments: string[] = [];
-        for (const segmentUri of activeSession.segments) {
-          const info = await FileSystem.getInfoAsync(segmentUri);
-          if (info.exists) {
-            validSegments.push(segmentUri);
-          }
-        }
-
-        if (validSegments.length > 0) {
-          // Create recording from recovered segments
-          const id = Date.now().toString();
-          const filename = `recording_${id}.m4a`;
-
-          let uri: string;
-          let recordingSegments: string[] | undefined;
-
-          if (validSegments.length === 1) {
-            uri = `${getRecordingsDirectory()}${filename}`;
-            await FileSystem.moveAsync({ from: validSegments[0], to: uri });
-          } else {
-            // Move first segment as primary URI, keep others as segments
-            uri = `${getRecordingsDirectory()}${filename}`;
-            await FileSystem.moveAsync({ from: validSegments[0], to: uri });
-            recordingSegments = [uri];
-
-            // Move remaining segments to recordings folder
-            for (let i = 1; i < validSegments.length; i++) {
-              const segFilename = `recording_${id}_seg${i}.m4a`;
-              const segUri = `${getRecordingsDirectory()}${segFilename}`;
-              await FileSystem.moveAsync({
-                from: validSegments[i],
-                to: segUri,
-              });
-              recordingSegments.push(segUri);
-            }
-          }
-
-          const recoveredRecording: Recording = {
-            id,
-            uri,
-            filename,
-            createdAt: activeSession.createdAt,
-            duration: activeSession.totalDuration,
-            segments: recordingSegments,
-          };
-
-          const currentRecordings = await loadRecordingsMetadata();
-          const updatedRecordings = [recoveredRecording, ...currentRecordings];
-          await saveRecordingMetadata(updatedRecordings);
-
-          console.log(
-            "Recovered recording with",
-            validSegments.length,
-            "segments"
-          );
-        }
-
-        await clearActiveSession();
-      }
-
       await refreshRecordings(true);
     };
     init();
@@ -241,18 +105,15 @@ export const useRecordings = (): UseRecordingsReturn => {
   // Update recording duration
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isRecording && !isPaused && segmentStartTime.current) {
+    if (isRecording && !isPaused && recordingStartTime) {
       interval = setInterval(() => {
-        const currentSegmentDuration = Date.now() - segmentStartTime.current;
-        setRecordingDuration(
-          totalDurationBeforeSegment.current + currentSegmentDuration
-        );
+        setRecordingDuration(Date.now() - recordingStartTime - pausedDuration);
       }, 100);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isRecording, isPaused]);
+  }, [isRecording, isPaused, recordingStartTime, pausedDuration]);
 
   // Save recording from background (called by timer)
   const saveRecordingFromBackground = useCallback(async () => {
@@ -266,9 +127,11 @@ export const useRecordings = (): UseRecordingsReturn => {
 
     try {
       // Calculate duration
-      const finalSegmentDuration = Date.now() - segmentStartTime.current;
-      const totalDuration =
-        totalDurationBeforeSegment.current + finalSegmentDuration;
+      let finalDuration =
+        Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
+      if (pauseStartTime.current > 0) {
+        finalDuration -= Date.now() - pauseStartTime.current;
+      }
 
       await currentRecording.stopAndUnloadAsync();
 
@@ -282,58 +145,20 @@ export const useRecordings = (): UseRecordingsReturn => {
         const filename = `recording_${id}.m4a`;
         const newUri = `${getRecordingsDirectory()}${filename}`;
 
-        // Handle segments if any
-        if (segments.current.length > 0) {
-          await FileSystem.moveAsync({ from: uri, to: newUri });
+        await FileSystem.moveAsync({ from: uri, to: newUri });
 
-          const allSegments: string[] = [];
-          for (let i = 0; i < segments.current.length; i++) {
-            const segFilename = `recording_${id}_seg${i}.m4a`;
-            const segUri = `${getRecordingsDirectory()}${segFilename}`;
-            await FileSystem.moveAsync({
-              from: segments.current[i],
-              to: segUri,
-            });
-            allSegments.push(segUri);
-          }
-          allSegments.push(newUri);
+        const newRecording: Recording = {
+          id,
+          uri: newUri,
+          filename,
+          createdAt: createdAtRef.current || new Date().toISOString(),
+          duration: Math.max(finalDuration, 0),
+        };
 
-          const newRecording: Recording = {
-            id,
-            uri: allSegments[0],
-            filename,
-            createdAt: createdAtRef.current || new Date().toISOString(),
-            duration: Math.max(totalDuration, 0),
-            segments: allSegments,
-          };
-
-          const updatedRecordings = [newRecording, ...recordingsRef.current];
-          await saveRecordingMetadata(updatedRecordings);
-          setRecordings(updatedRecordings);
-        } else {
-          await FileSystem.moveAsync({ from: uri, to: newUri });
-
-          const newRecording: Recording = {
-            id,
-            uri: newUri,
-            filename,
-            createdAt: createdAtRef.current || new Date().toISOString(),
-            duration: Math.max(totalDuration, 0),
-          };
-
-          const updatedRecordings = [newRecording, ...recordingsRef.current];
-          await saveRecordingMetadata(updatedRecordings);
-          setRecordings(updatedRecordings);
-        }
-
+        const updatedRecordings = [newRecording, ...recordingsRef.current];
+        await saveRecordingMetadata(updatedRecordings);
+        setRecordings(updatedRecordings);
         console.log("Recording saved from background");
-      }
-
-      // Clear session and checkpoint timer
-      await clearActiveSession();
-      if (checkpointTimer.current) {
-        clearInterval(checkpointTimer.current);
-        checkpointTimer.current = null;
       }
 
       try {
@@ -348,10 +173,6 @@ export const useRecordings = (): UseRecordingsReturn => {
       setPausedDuration(0);
       pauseStartTime.current = 0;
       createdAtRef.current = "";
-      sessionId.current = "";
-      segments.current = [];
-      segmentStartTime.current = 0;
-      totalDurationBeforeSegment.current = 0;
     } catch (error) {
       console.error("Error saving from background:", error);
     } finally {
@@ -359,112 +180,7 @@ export const useRecordings = (): UseRecordingsReturn => {
     }
   }, []);
 
-  // Create a checkpoint (save current segment, start new one)
-  const createCheckpoint = useCallback(async () => {
-    const currentRecording = recordingRef.current;
-    if (!currentRecording || !isRecordingRef.current || isPausedRef.current) {
-      return;
-    }
-
-    try {
-      // Calculate duration of this segment
-      const segmentDuration = Date.now() - segmentStartTime.current;
-      totalDurationBeforeSegment.current += segmentDuration;
-
-      // Stop current recording
-      await currentRecording.stopAndUnloadAsync();
-
-      const uri = currentRecording.getURI();
-      if (uri) {
-        // Save segment to segments folder
-        const segmentFilename = `segment_${sessionId.current}_${segments.current.length}.m4a`;
-        const segmentUri = `${getSegmentsDirectory()}${segmentFilename}`;
-
-        await FileSystem.moveAsync({ from: uri, to: segmentUri });
-        segments.current.push(segmentUri);
-
-        // Update active session in storage (for recovery if killed)
-        await saveActiveSession({
-          sessionId: sessionId.current,
-          segments: segments.current,
-          createdAt: createdAtRef.current,
-          totalDuration: totalDurationBeforeSegment.current,
-        });
-
-        console.log("Checkpoint saved:", segmentFilename);
-      }
-
-      // Start new recording immediately
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        shouldDuckAndroid: false,
-        playThroughEarpieceAndroid: false,
-      });
-
-      const newRecording = new Audio.Recording();
-
-      // Set up phone call detection for new recording
-      newRecording.setOnRecordingStatusUpdate(async (status) => {
-        if (
-          !status.isRecording &&
-          isRecordingRef.current &&
-          !isPausedRef.current &&
-          !wasInterruptedByPhoneCall.current
-        ) {
-          console.log("Recording interrupted (phone call started)");
-          wasInterruptedByPhoneCall.current = true;
-          setIsPaused(true);
-          pauseStartTime.current = Date.now();
-        }
-
-        if (
-          wasInterruptedByPhoneCall.current &&
-          status.canRecord &&
-          isPausedRef.current
-        ) {
-          console.log("Phone call ended - auto resuming...");
-          try {
-            await Audio.setAudioModeAsync({
-              allowsRecordingIOS: true,
-              playsInSilentModeIOS: true,
-              staysActiveInBackground: true,
-              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-              shouldDuckAndroid: false,
-              playThroughEarpieceAndroid: false,
-            });
-
-            await newRecording.startAsync();
-            segmentStartTime.current = Date.now();
-
-            setIsPaused(false);
-            wasInterruptedByPhoneCall.current = false;
-            console.log("Recording resumed after phone call");
-          } catch (error) {
-            console.log("Could not resume yet:", error);
-          }
-        }
-      });
-
-      await newRecording.prepareToRecordAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      await newRecording.startAsync();
-
-      segmentStartTime.current = Date.now();
-      setRecording(newRecording);
-
-      console.log("New segment started");
-    } catch (error) {
-      console.error("Error creating checkpoint:", error);
-    }
-  }, []);
-
-  // Handle app background: start timer, cancel on return, create checkpoint
+  // Handle app background: start timer, cancel on return
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
       if (nextAppState === "active") {
@@ -484,16 +200,12 @@ export const useRecordings = (): UseRecordingsReturn => {
           recordingRef.current &&
           !isPausedRef.current
         ) {
-          // Create checkpoint immediately when going to background
-          console.log("App going to background - creating checkpoint...");
-          await createCheckpoint();
-
           // Don't start timer if interrupted by phone call (handled separately)
           if (!wasInterruptedByPhoneCall.current) {
             console.log(
-              "Starting background save timer:",
+              "App in background - starting",
               BACKGROUND_SAVE_DELAY / 1000,
-              "s"
+              "s timer"
             );
 
             // Recording CONTINUES - we just start a timer
@@ -517,7 +229,7 @@ export const useRecordings = (): UseRecordingsReturn => {
         clearTimeout(backgroundSaveTimer.current);
       }
     };
-  }, [refreshRecordings, saveRecordingFromBackground, createCheckpoint]);
+  }, [refreshRecordings, saveRecordingFromBackground]);
 
   const startRecording = useCallback(async () => {
     try {
@@ -571,7 +283,13 @@ export const useRecordings = (): UseRecordingsReturn => {
             });
 
             await newRecording.startAsync();
-            segmentStartTime.current = Date.now();
+
+            if (pauseStartTime.current > 0) {
+              setPausedDuration(
+                (prev) => prev + (Date.now() - pauseStartTime.current)
+              );
+              pauseStartTime.current = 0;
+            }
 
             setIsPaused(false);
             wasInterruptedByPhoneCall.current = false;
@@ -593,20 +311,7 @@ export const useRecordings = (): UseRecordingsReturn => {
         console.log("Could not activate keep-awake:", e);
       }
 
-      // Initialize session
-      sessionId.current = Date.now().toString();
-      segments.current = [];
-      segmentStartTime.current = Date.now();
-      totalDurationBeforeSegment.current = 0;
       createdAtRef.current = new Date().toISOString();
-
-      // Save initial session state
-      await saveActiveSession({
-        sessionId: sessionId.current,
-        segments: [],
-        createdAt: createdAtRef.current,
-        totalDuration: 0,
-      });
 
       setRecording(newRecording);
       setIsRecording(true);
@@ -616,23 +321,11 @@ export const useRecordings = (): UseRecordingsReturn => {
       setPausedDuration(0);
       wasInterruptedByPhoneCall.current = false;
 
-      // Start checkpoint timer
-      checkpointTimer.current = setInterval(() => {
-        // Skip if paused or interrupted
-        if (!isPausedRef.current && !wasInterruptedByPhoneCall.current) {
-          createCheckpoint();
-        }
-      }, CHECKPOINT_INTERVAL);
-
-      console.log(
-        "Recording started with checkpoints every",
-        CHECKPOINT_INTERVAL / 1000,
-        "seconds"
-      );
+      console.log("Recording started");
     } catch (error) {
       console.error("Error starting recording:", error);
     }
-  }, [createCheckpoint]);
+  }, []);
 
   const pauseRecording = useCallback(async () => {
     if (!recording || !isRecording || isPaused) return;
@@ -662,7 +355,13 @@ export const useRecordings = (): UseRecordingsReturn => {
       });
 
       await recording.startAsync();
-      segmentStartTime.current = Date.now();
+
+      if (pauseStartTime.current > 0) {
+        setPausedDuration(
+          (prev) => prev + (Date.now() - pauseStartTime.current)
+        );
+        pauseStartTime.current = 0;
+      }
 
       setIsPaused(false);
       wasInterruptedByPhoneCall.current = false;
@@ -675,21 +374,16 @@ export const useRecordings = (): UseRecordingsReturn => {
   const stopRecording = useCallback(async () => {
     if (!recording) return;
 
-    // Stop checkpoint timer
-    if (checkpointTimer.current) {
-      clearInterval(checkpointTimer.current);
-      checkpointTimer.current = null;
-    }
-
     setIsSaving(true);
     try {
       setIsRecording(false);
       setIsPaused(false);
 
-      // Calculate final segment duration
-      const finalSegmentDuration = Date.now() - segmentStartTime.current;
-      const totalDuration =
-        totalDurationBeforeSegment.current + finalSegmentDuration;
+      // Calculate duration
+      let finalDuration = Date.now() - recordingStartTime - pausedDuration;
+      if (pauseStartTime.current > 0) {
+        finalDuration -= Date.now() - pauseStartTime.current;
+      }
 
       await recording.stopAndUnloadAsync();
 
@@ -703,56 +397,20 @@ export const useRecordings = (): UseRecordingsReturn => {
         const filename = `recording_${id}.m4a`;
         const newUri = `${getRecordingsDirectory()}${filename}`;
 
-        // If we have previous segments, handle multi-segment recording
-        if (segments.current.length > 0) {
-          // Move final segment to recordings folder
-          await FileSystem.moveAsync({ from: uri, to: newUri });
+        await FileSystem.moveAsync({ from: uri, to: newUri });
 
-          // Move all previous segments to recordings folder and build segments array
-          const allSegments: string[] = [];
-          for (let i = 0; i < segments.current.length; i++) {
-            const segFilename = `recording_${id}_seg${i}.m4a`;
-            const segUri = `${getRecordingsDirectory()}${segFilename}`;
-            await FileSystem.moveAsync({
-              from: segments.current[i],
-              to: segUri,
-            });
-            allSegments.push(segUri);
-          }
-          allSegments.push(newUri); // Add final segment
+        const newRecording: Recording = {
+          id,
+          uri: newUri,
+          filename,
+          createdAt: createdAtRef.current || new Date().toISOString(),
+          duration: Math.max(finalDuration, 0),
+        };
 
-          const newRecording: Recording = {
-            id,
-            uri: allSegments[0], // Primary URI is first segment
-            filename,
-            createdAt: createdAtRef.current || new Date().toISOString(),
-            duration: Math.max(totalDuration, 0),
-            segments: allSegments,
-          };
-
-          const updatedRecordings = [newRecording, ...recordings];
-          await saveRecordingMetadata(updatedRecordings);
-          setRecordings(updatedRecordings);
-
-          console.log("Recording saved with", allSegments.length, "segments");
-        } else {
-          // Single segment (recording < 3 seconds)
-          await FileSystem.moveAsync({ from: uri, to: newUri });
-
-          const newRecording: Recording = {
-            id,
-            uri: newUri,
-            filename,
-            createdAt: createdAtRef.current || new Date().toISOString(),
-            duration: Math.max(totalDuration, 0),
-          };
-
-          const updatedRecordings = [newRecording, ...recordings];
-          await saveRecordingMetadata(updatedRecordings);
-          setRecordings(updatedRecordings);
-
-          console.log("Recording saved (single segment)");
-        }
+        const updatedRecordings = [newRecording, ...recordings];
+        await saveRecordingMetadata(updatedRecordings);
+        setRecordings(updatedRecordings);
+        console.log("Recording saved");
       }
 
       try {
@@ -761,45 +419,25 @@ export const useRecordings = (): UseRecordingsReturn => {
         console.log("Could not deactivate keep-awake:", e);
       }
 
-      // Clear session
-      await clearActiveSession();
-
-      // Reset state
       setRecording(null);
       setRecordingDuration(0);
       setRecordingStartTime(0);
       setPausedDuration(0);
       pauseStartTime.current = 0;
-      sessionId.current = "";
-      segments.current = [];
-      segmentStartTime.current = 0;
-      totalDurationBeforeSegment.current = 0;
       createdAtRef.current = "";
     } catch (error) {
       console.error("Error stopping:", error);
     } finally {
       setIsSaving(false);
     }
-  }, [recording, recordings]);
+  }, [recording, recordingStartTime, pausedDuration, recordings]);
 
   const deleteRecording = useCallback(
     async (id: string) => {
       try {
         const recordingToDelete = recordings.find((r) => r.id === id);
         if (recordingToDelete) {
-          // Delete primary file
           await deleteRecordingFile(recordingToDelete.uri);
-
-          // Delete segments if any
-          if (recordingToDelete.segments) {
-            for (const segmentUri of recordingToDelete.segments) {
-              try {
-                await deleteRecordingFile(segmentUri);
-              } catch (e) {
-                console.log("Could not delete segment:", segmentUri);
-              }
-            }
-          }
         }
 
         const updatedRecordings = recordings.filter((r) => r.id !== id);
