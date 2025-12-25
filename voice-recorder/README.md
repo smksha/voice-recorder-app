@@ -5,6 +5,7 @@ A React Native voice recorder application built with Expo SDK 52 and TypeScript.
 ## Features
 
 ### Recordings List Screen
+
 - ✅ Show a list of all existing recordings
 - ✅ Each item displays:
   - Date & Time of initiation
@@ -15,6 +16,7 @@ A React Native voice recorder application built with Expo SDK 52 and TypeScript.
 - ✅ Delete recordings with confirmation
 
 ### New Recording Screen
+
 - ✅ Single "Start Recording" button to initiate recording
 - ✅ While recording:
   - Display elapsed time
@@ -24,6 +26,7 @@ A React Native voice recorder application built with Expo SDK 52 and TypeScript.
 - ✅ On stop, save the recording with timestamp and duration
 
 ### Background Resilience
+
 - ✅ Recording continues when phone goes to sleep (background audio mode enabled)
 - ✅ If interrupted by phone call:
   - Recording automatically pauses
@@ -79,20 +82,6 @@ src/
     └── formatters.ts           # Date/time & duration formatters
 ```
 
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/smksha/voice-recorder-app.git
-cd voice-recorder-app/voice-recorder
-
-# Install dependencies
-npm install
-
-# Start the development server
-npm start
-```
-
 ## Running on Device
 
 ### iOS (requires Mac with Xcode)
@@ -120,6 +109,7 @@ npx expo run:android --device
 ```bash
 npm start
 ```
+
 Scan the QR code with your device camera to open in Expo Go app.
 
 ## Permissions
@@ -127,16 +117,19 @@ Scan the QR code with your device camera to open in Expo Go app.
 The app requires the following permissions:
 
 ### iOS
+
 - `NSMicrophoneUsageDescription`: Microphone access for recording
 - `UIBackgroundModes`: Audio background mode for continued recording
 
 ### Android
+
 - `android.permission.RECORD_AUDIO`: Microphone access
 - `android.permission.MODIFY_AUDIO_SETTINGS`: Audio settings control
 
 ## Architecture
 
 ### Recording Flow
+
 1. User taps record button
 2. `useRecordings` hook requests microphone permission
 3. Audio mode is configured for recording
@@ -147,12 +140,14 @@ The app requires the following permissions:
 8. Metadata is persisted to AsyncStorage
 
 ### Background Handling
+
 1. **Phone Call Detection**: Recording status callback detects audio interruption
 2. **App Backgrounding**: AppState listener detects background/foreground transitions
 3. **Auto-save Timer**: 3-second timer saves recording if user doesn't return
 4. **Auto-resume**: Recording resumes automatically when returning from phone call
 
 ### Playback Flow
+
 1. User taps play on a recording
 2. `useAudioPlayer` hook loads the audio file
 3. Playback status updates position in real-time

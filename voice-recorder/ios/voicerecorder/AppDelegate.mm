@@ -3,45 +3,17 @@
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTLinkingManager.h>
 
-@implementation AppDelegate {
-  UIBackgroundTaskIdentifier _backgroundTask;
-}
+@implementation AppDelegate
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
   self.moduleName = @"main";
-  _backgroundTask = UIBackgroundTaskInvalid;
 
   // You can add your custom initial props in the dictionary below.
   // They will be passed down to the ViewController used by React Native.
   self.initialProps = @{};
 
   return [super application:application didFinishLaunchingWithOptions:launchOptions];
-}
-
-// Background task support - gives JS extra time to save recording when app goes to background
-- (void)applicationDidEnterBackground:(UIApplication *)application
-{
-  _backgroundTask = [application beginBackgroundTaskWithName:@"SaveRecording" expirationHandler:^{
-    [application endBackgroundTask:self->_backgroundTask];
-    self->_backgroundTask = UIBackgroundTaskInvalid;
-  }];
-  
-  // End the task after 25 seconds (iOS gives ~30 seconds max)
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-    if (self->_backgroundTask != UIBackgroundTaskInvalid) {
-      [application endBackgroundTask:self->_backgroundTask];
-      self->_backgroundTask = UIBackgroundTaskInvalid;
-    }
-  });
-}
-
-- (void)applicationWillEnterForeground:(UIApplication *)application
-{
-  if (_backgroundTask != UIBackgroundTaskInvalid) {
-    [application endBackgroundTask:_backgroundTask];
-    _backgroundTask = UIBackgroundTaskInvalid;
-  }
 }
 
 - (NSURL *)sourceURLForBridge:(RCTBridge *)bridge
