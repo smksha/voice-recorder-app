@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
+import { AppState, AppStateStatus } from 'react-native';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Recording } from '../types/Recording';
 import {
@@ -39,6 +40,19 @@ export const useRecordings = (): UseRecordingsReturn => {
   const [pausedDuration, setPausedDuration] = useState<number>(0);
   const pauseStartTime = useRef<number>(0);
   const createdAtRef = useRef<string>('');
+  const wasInterruptedByPhoneCall = useRef<boolean>(false);
+  
+  // Refs for AppState handler (to access current state)
+  const recordingRef = useRef(recording);
+  const isRecordingRef = useRef(isRecording);
+  const isPausedRef = useRef(isPaused);
+  
+  // Keep refs in sync
+  useEffect(() => {
+    recordingRef.current = recording;
+    isRecordingRef.current = isRecording;
+    isPausedRef.current = isPaused;
+  }, [recording, isRecording, isPaused]);
 
   const refreshRecordings = useCallback(async (cleanup: boolean = false) => {
     setIsLoading(true);
@@ -80,6 +94,48 @@ export const useRecordings = (): UseRecordingsReturn => {
     };
   }, [isRecording, isPaused, recordingStartTime, pausedDuration]);
 
+  // Handle phone call interruption: auto-resume when call ends
+  useEffect(() => {
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      // When app becomes active after phone call, resume recording
+      if (nextAppState === 'active') {
+        if (wasInterruptedByPhoneCall.current && recordingRef.current && isPausedRef.current) {
+          console.log('Phone call ended - resuming recording...');
+          try {
+            // Re-configure audio mode
+            await Audio.setAudioModeAsync({
+              allowsRecordingIOS: true,
+              playsInSilentModeIOS: true,
+              staysActiveInBackground: true,
+              interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+              interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+              shouldDuckAndroid: false,
+              playThroughEarpieceAndroid: false,
+            });
+
+            // Resume the recording
+            await recordingRef.current.startAsync();
+            
+            // Account for paused time
+            if (pauseStartTime.current > 0) {
+              setPausedDuration(prev => prev + (Date.now() - pauseStartTime.current));
+              pauseStartTime.current = 0;
+            }
+            
+            setIsPaused(false);
+            wasInterruptedByPhoneCall.current = false;
+            console.log('Recording resumed after phone call');
+          } catch (error) {
+            console.error('Error resuming after phone call:', error);
+          }
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
+
   const startRecording = useCallback(async () => {
     try {
       // Request permissions
@@ -102,6 +158,18 @@ export const useRecordings = (): UseRecordingsReturn => {
 
       // Create and start recording
       const newRecording = new Audio.Recording();
+      
+      // Detect phone call interruptions via status updates
+      newRecording.setOnRecordingStatusUpdate((status) => {
+        // If recording stops unexpectedly while we think we're recording = phone call
+        if (!status.isRecording && isRecordingRef.current && !isPausedRef.current) {
+          console.log('Recording interrupted (phone call detected)');
+          wasInterruptedByPhoneCall.current = true;
+          setIsPaused(true);
+          pauseStartTime.current = Date.now();
+        }
+      });
+      
       await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await newRecording.startAsync();
 
