@@ -41,6 +41,10 @@ export const useRecordings = (): UseRecordingsReturn => {
   const pauseStartTime = useRef<number>(0);
   const wasInterruptedByPhoneCall = useRef<boolean>(false);
   const createdAtRef = useRef<string>('');
+  const backgroundSaveTimer = useRef<NodeJS.Timeout | null>(null);
+  
+  // Delay before auto-saving in background (native task gives ~25s, we use 20s)
+  const BACKGROUND_SAVE_DELAY = 20000;
 
   const refreshRecordings = useCallback(async (cleanup: boolean = false) => {
     setIsLoading(true);
@@ -105,13 +109,79 @@ export const useRecordings = (): UseRecordingsReturn => {
     recordingsRef.current = recordings;
   }, [isRecording, isPaused, recording, recordingStartTime, pausedDuration, recordings]);
 
+  // Save recording helper (used by timer and stop button)
+  const saveRecordingInBackground = useCallback(async () => {
+    const currentRecording = recordingRef.current;
+    if (!currentRecording || !isRecordingRef.current) {
+      console.log('No active recording to save');
+      return;
+    }
+
+    console.log('Saving recording...');
+    setIsSaving(true);
+    
+    try {
+      const duration = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
+      
+      await currentRecording.stopAndUnloadAsync();
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+      });
+
+      const uri = currentRecording.getURI();
+      if (uri) {
+        const id = Date.now().toString();
+        const filename = `recording_${id}.m4a`;
+        const newUri = `${getRecordingsDirectory()}${filename}`;
+
+        await FileSystem.moveAsync({ from: uri, to: newUri });
+
+        const newRec: Recording = {
+          id,
+          uri: newUri,
+          filename,
+          createdAt: createdAtRef.current || new Date().toISOString(),
+          duration: Math.max(duration, 0),
+        };
+
+        const updated = [newRec, ...recordingsRef.current];
+        await saveRecordingMetadata(updated);
+        setRecordings(updated);
+        console.log('Recording saved');
+      }
+
+      try { deactivateKeepAwake('recording'); } catch {}
+
+      setRecording(null);
+      setIsRecording(false);
+      setIsPaused(false);
+      setRecordingDuration(0);
+      setRecordingStartTime(0);
+      setPausedDuration(0);
+      createdAtRef.current = '';
+      
+    } catch (error) {
+      console.error('Error saving recording:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, []);
+
   // Handle app state changes
   // Phone call: pause/resume
-  // Background: save recording (native code gives us time via beginBackgroundTask)
+  // Background: recording CONTINUES, but set timer to save after 20s (in case of app kill)
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
       if (nextAppState === 'active') {
         console.log('App active');
+
+        // Cancel background save timer - user returned
+        if (backgroundSaveTimer.current) {
+          console.log('User returned - canceling background save timer');
+          clearTimeout(backgroundSaveTimer.current);
+          backgroundSaveTimer.current = null;
+        }
 
         // Phone call ended - resume recording
         if (wasInterruptedByPhoneCall.current && recordingRef.current && isPausedRef.current) {
@@ -160,66 +230,29 @@ export const useRecordings = (): UseRecordingsReturn => {
               console.error('Error pausing:', error);
             }
           } else {
-            // User backgrounded or app being killed: SAVE recording
-            // Native code (AppDelegate) gives us ~25 seconds via beginBackgroundTask
-            console.log('Background - saving recording...');
-            setIsSaving(true);
+            // User backgrounded: Recording CONTINUES
+            // Set timer to save after 20s (in case app gets killed)
+            // Native beginBackgroundTask gives us ~25s of execution time
+            console.log('Background - recording continues, setting save timer...');
             
-            try {
-              const currentRecording = recordingRef.current;
-              const duration = Date.now() - recordingStartTimeRef.current - pausedDurationRef.current;
-              
-              await currentRecording.stopAndUnloadAsync();
-
-              await Audio.setAudioModeAsync({
-                allowsRecordingIOS: false,
-              });
-
-              const uri = currentRecording.getURI();
-              if (uri) {
-                const id = Date.now().toString();
-                const filename = `recording_${id}.m4a`;
-                const newUri = `${getRecordingsDirectory()}${filename}`;
-
-                await FileSystem.moveAsync({ from: uri, to: newUri });
-
-                const newRec: Recording = {
-                  id,
-                  uri: newUri,
-                  filename,
-                  createdAt: createdAtRef.current || new Date().toISOString(),
-                  duration: Math.max(duration, 0),
-                };
-
-                const updated = [newRec, ...recordingsRef.current];
-                await saveRecordingMetadata(updated);
-                setRecordings(updated);
-                console.log('Recording saved on background');
-              }
-
-              try { deactivateKeepAwake('recording'); } catch {}
-
-              setRecording(null);
-              setIsRecording(false);
-              setIsPaused(false);
-              setRecordingDuration(0);
-              setRecordingStartTime(0);
-              setPausedDuration(0);
-              createdAtRef.current = '';
-              
-            } catch (error) {
-              console.error('Error saving on background:', error);
-            } finally {
-              setIsSaving(false);
-            }
+            backgroundSaveTimer.current = setTimeout(() => {
+              console.log('Background save timer fired - saving recording');
+              backgroundSaveTimer.current = null;
+              saveRecordingInBackground();
+            }, BACKGROUND_SAVE_DELAY);
           }
         }
       }
     };
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
-  }, [refreshRecordings]);
+    return () => {
+      subscription.remove();
+      if (backgroundSaveTimer.current) {
+        clearTimeout(backgroundSaveTimer.current);
+      }
+    };
+  }, [refreshRecordings, saveRecordingInBackground]);
 
   // Update recording duration
   useEffect(() => {
