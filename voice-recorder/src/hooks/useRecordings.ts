@@ -169,8 +169,9 @@ export const useRecordings = (): UseRecordingsReturn => {
   }, []);
 
   // Handle app state changes
-  // Phone call: pause/resume
-  // Background: recording CONTINUES, but set timer to save after 20s (in case of app kill)
+  // Background: PAUSE recording, set safety timer to save after 20s
+  // Return: RESUME recording (cancel timer)
+  // Phone call: same pause/resume behavior
   useEffect(() => {
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
       if (nextAppState === 'active') {
@@ -178,14 +179,14 @@ export const useRecordings = (): UseRecordingsReturn => {
 
         // Cancel background save timer - user returned
         if (backgroundSaveTimer.current) {
-          console.log('User returned - canceling background save timer');
+          console.log('User returned - canceling save timer');
           clearTimeout(backgroundSaveTimer.current);
           backgroundSaveTimer.current = null;
         }
 
-        // Phone call ended - resume recording
-        if (wasInterruptedByPhoneCall.current && recordingRef.current && isPausedRef.current) {
-          console.log('Resuming after phone call...');
+        // Resume recording if it was paused (either by background or phone call)
+        if (recordingRef.current && isPausedRef.current && isRecordingRef.current) {
+          console.log('Resuming recording...');
           try {
             await Audio.setAudioModeAsync({
               allowsRecordingIOS: true,
@@ -216,30 +217,26 @@ export const useRecordings = (): UseRecordingsReturn => {
         refreshRecordings();
         
       } else if (nextAppState === 'background' || nextAppState === 'inactive') {
-        // App going to background
+        // App going to background - PAUSE recording
         if (isRecordingRef.current && recordingRef.current && !isPausedRef.current) {
-          
-          if (wasInterruptedByPhoneCall.current) {
-            // Phone call: just pause (will resume after call)
-            console.log('Phone call - pausing...');
-            try {
-              await recordingRef.current.pauseAsync();
-              setIsPaused(true);
-              pauseStartTime.current = Date.now();
-            } catch (error) {
-              console.error('Error pausing:', error);
-            }
-          } else {
-            // User backgrounded: Recording CONTINUES
-            // Set timer to save after 20s (in case app gets killed)
-            // Native beginBackgroundTask gives us ~25s of execution time
-            console.log('Background - recording continues, setting save timer...');
+          console.log('Background - pausing recording...');
+          try {
+            await recordingRef.current.pauseAsync();
+            setIsPaused(true);
+            pauseStartTime.current = Date.now();
             
+            // Set safety timer: if user doesn't return within 20s, save recording
+            // This protects against app kill (paused files are not finalized)
+            // Native beginBackgroundTask gives ~25s, we use 20s for safety
+            console.log('Setting 20s save timer (safety net for app kill)');
             backgroundSaveTimer.current = setTimeout(() => {
-              console.log('Background save timer fired - saving recording');
+              console.log('Save timer fired - saving recording');
               backgroundSaveTimer.current = null;
               saveRecordingInBackground();
             }, BACKGROUND_SAVE_DELAY);
+            
+          } catch (error) {
+            console.error('Error pausing:', error);
           }
         }
       }
